@@ -549,7 +549,7 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
             got: call.positional.len(),
         });
     }
-    require_no_kwargs_except(call, &["per_parent"])?;
+    require_no_kwargs_except(call, &["per_parent", "distribution"])?;
     let per_parent = match find_kwarg(call, "per_parent") {
         Some(Value::Range { lo, hi }) => {
             if *lo < 0 {
@@ -575,6 +575,29 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
         }
         None => None,
     };
+    let distribution = match find_kwarg(call, "distribution") {
+        Some(Value::String(s)) => match super::distribution::Distribution::from_name(s) {
+            Some(d) => d,
+            None => return Err(SemanticError::InvalidArgValue {
+                line: call.line,
+                col: call.col,
+                function: call.function.clone(),
+                arg: "distribution".into(),
+                reason: format!(
+                    "unknown distribution `{s}` — expected one of: uniform, zipf, gauss, exponential"
+                ),
+            }),
+        },
+        Some(other) => return Err(SemanticError::TypeMismatch {
+            line: call.line,
+            col: call.col,
+            function: call.function.clone(),
+            arg: "distribution".into(),
+            expected: "string",
+            got: other.type_name(),
+        }),
+        None => super::distribution::Distribution::Uniform,
+    };
     let (table, column) = match &call.positional[0] {
         Value::ColumnRef { table, column } => (table.clone(), column.clone()),
         other => {
@@ -588,7 +611,7 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
             });
         }
     };
-    Ok(Box::new(RefGen { table, column, per_parent }))
+    Ok(Box::new(RefGen { table, column, per_parent, distribution }))
 }
 
 struct RefGen {
@@ -599,6 +622,7 @@ struct RefGen {
     // active; the field is stored here so the catalog stays in sync.
     #[allow(dead_code)]
     per_parent: Option<(u64, u64)>,
+    distribution: super::distribution::Distribution,
 }
 
 impl Generator for RefGen {
@@ -626,7 +650,7 @@ impl Generator for RefGen {
             Some((pt, pc, parent_idx)) if pt == self.table && pc == self.column => {
                 parent_idx % values.len()
             }
-            _ => rng.pick_index(values.len()),
+            _ => self.distribution.draw(rng, values.len()),
         };
         values[idx].clone()
     }

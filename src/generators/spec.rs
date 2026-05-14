@@ -353,6 +353,14 @@ pub static CATALOG: &[FunctionSpec] = &[
                 default: None,
                 length: None,
             },
+            ArgSpec {
+                name: "distribution",
+                ty: ArgType::String,
+                required: false,
+                positional: false,
+                default: Some("\"uniform\""),
+                length: None,
+            },
         ],
         variadic: None,
         // Catalog sentinel: the actual return type depends on which column

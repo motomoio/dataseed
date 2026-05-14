@@ -576,3 +576,44 @@ fn ref_bind_rejects_negative_per_parent() {
     let err = crate::generators::bind(&call).err().expect("should reject");
     assert!(matches!(err, crate::SemanticError::InvalidArgValue { .. }));
 }
+
+#[test]
+fn ref_bind_accepts_distribution_kwarg() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("distribution".into(), Value::String("zipf".into()))],
+        line: 1,
+        col: 1,
+    };
+    assert!(crate::generators::bind(&call).is_ok());
+}
+
+#[test]
+fn ref_bind_rejects_unknown_distribution() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("distribution".into(), Value::String("uniformish".into()))],
+        line: 1,
+        col: 1,
+    };
+    let err = crate::generators::bind(&call).err().expect("should reject");
+    assert!(matches!(err, crate::SemanticError::InvalidArgValue { .. }));
+}
+
+#[test]
+fn ref_bind_rejects_non_string_distribution() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("distribution".into(), Value::Number(1.0))],
+        line: 1,
+        col: 1,
+    };
+    let err = crate::generators::bind(&call).err().expect("should reject");
+    assert!(matches!(err, crate::SemanticError::TypeMismatch { .. }));
+}
