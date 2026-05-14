@@ -6,6 +6,32 @@ Plant a seed, grow a dataset.
 realistic-looking dataset for testing — fixtures for databases, ETL
 pipelines, demo data, anywhere you'd otherwise hand-roll fake data.
 
+## Contents
+
+- [Install](#install)
+- [30-second quickstart](#30-second-quickstart)
+- [A `.dataseed` file](#a-dataseed-file)
+- [Built-in generators](#built-in-generators)
+- [Geospatial output](#geospatial-output)
+- [Emit-DDL](#emit-ddl)
+- [Relations](#relations)
+  - [What's caught at lint time](#whats-caught-at-lint-time)
+  - [Variable child counts: `per_parent`](#variable-child-counts-per_parent)
+  - [Distribution: skewed parent draws](#distribution-skewed-parent-draws)
+  - [Spatial relations](#spatial-relations)
+  - [Self-references](#self-references)
+  - [CLI flags for multi-table files](#cli-flags-for-multi-table-files)
+  - [Single-table output stability](#single-table-output-stability)
+- [Type system](#type-system)
+- [Determinism](#determinism)
+- [Error messages](#error-messages)
+- [Harvest: inferring a `.dataseed` file from a real database](#harvest-inferring-a-dataseed-file-from-a-real-database)
+  - [What it infers](#what-it-infers)
+  - [Determinism](#determinism-1)
+  - [Feature flag](#feature-flag)
+- [Scope](#scope)
+- [License](#license)
+
 ## Install
 
 ### Pre-built binaries
