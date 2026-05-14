@@ -211,6 +211,31 @@ Constraints:
 
 See `examples/blog.dataseed` for a realistic shape.
 
+### Distribution: skewed parent draws
+
+`ref()` accepts a `distribution:` kwarg controlling how parent values are
+picked. The default is `"uniform"`; the other three model common
+real-world skews:
+
+| keyword           | shape                          |
+|-------------------|--------------------------------|
+| `"uniform"` (default) | flat — every parent equally likely |
+| `"zipf"`          | rank-1 heavy tail — first parent dominates |
+| `"gauss"`         | bell around the median rank    |
+| `"exponential"`   | first-rank biased exponential decay |
+
+````
+table actions {
+  id:      sequence
+  user_id: ref(users.id, distribution: "zipf")
+}
+````
+
+`distribution` composes with `per_parent`: per_parent decides how many
+children each parent owns, while `distribution` only kicks in for refs
+that AREN'T per_parent-driven (e.g. a sibling `ref(categories.id)` in
+the same child table).
+
 ### CLI flags for multi-table files
 
 ```
@@ -310,11 +335,11 @@ Phases 1, 2, 3, and 4 (in progress: `per_parent` for variable child counts) are 
 with topological generation order and cycle detection, SQL / PostGIS /
 JSON output, deterministic generation, machine-readable `--json` catalog.
 
-Out of scope (planned for later phases): distribution skew on refs
-(zipf/etc.), correlated refs (`order.created_at > user.signup_date`),
-nested JSON output, spatial relations ("orders within 1km of warehouse"),
-custom CRS beyond WGS84, custom templates, streaming output, parallel
-generation, and CSV / XML / Parquet output formats.
+Out of scope (planned for later phases): correlated refs
+(`order.created_at > user.signup_date`), nested JSON output, spatial
+relations ("orders within 1km of warehouse"), custom CRS beyond WGS84,
+custom templates, streaming output, parallel generation, and CSV / XML /
+Parquet output formats.
 
 The bundled wordlist (`src/generators/data/words.txt`) and name lists are
 intentionally modest — enough to feel realistic for fixtures. Swap them
