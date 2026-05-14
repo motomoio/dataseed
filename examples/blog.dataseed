@@ -1,0 +1,22 @@
+# Authors and their blog posts, with realistic variance in post count.
+# Some authors write 0 posts, some write many — exactly what real blog
+# datasets look like. `per_parent: 0..20` does the work.
+#
+# No `generate posts: N` directive — the row count is derived from the
+# per_parent draws.
+
+output: sql
+
+table users {
+  id:   sequence
+  name: randomName()
+}
+
+table posts {
+  id:        sequence
+  author_id: ref(users.id, per_parent: 0..20)
+  title:     randomWord()
+  body:      randomWord()
+}
+
+generate users: 50

@@ -87,6 +87,7 @@ fn different_seeds_produce_different_geometries() {
 
 const SHOP_SHA: &str = "f13feb9a2a3275f4faaca6e8186a69ce169100023af5bf2ab34d4783f42b22f3";
 const FLEET_SHA: &str = "2eacca59c9eee642ed3ce542e08372bd44b3534bf1b28bdfc2d3801d631255f5";
+const BLOG_SHA: &str = "881703fba4457302d84338829f41fc816927d575f0513f351f9abee37dc0cda1";
 
 fn sha256(bytes: &[u8]) -> String {
     // Avoid pulling sha2 in as a runtime dep — shell out to the same tool
@@ -115,6 +116,16 @@ fn shop_example_matches_reference_sha() {
 fn fleet_example_matches_reference_sha() {
     let out = run_plant("examples/fleet.dataseed", 42, &[]);
     assert_eq!(sha256(&out), FLEET_SHA, "fleet.dataseed reference SHA drifted");
+}
+
+#[test]
+fn blog_example_matches_reference_sha() {
+    let out = run_plant("examples/blog.dataseed", 42, &[]);
+    assert_eq!(
+        sha256(&out),
+        BLOG_SHA,
+        "blog example SHA changed — Phase 4.1 per_parent output is not byte-stable"
+    );
 }
 
 #[test]

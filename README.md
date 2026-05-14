@@ -187,6 +187,30 @@ ok: examples/fleet.dataseed
 | Declared table has no `generate` directive            | `MissingGenerate`           |
 | `generate ghost: N` for an undeclared table           | `GenerateForUnknownTable`   |
 
+### Variable child counts: `per_parent`
+
+A `ref()` may take `per_parent: N..M` to declare that each parent row owns
+between N and M children. The child table's row count is **derived** —
+omit `generate posts: K` and dataseed sums the per-parent draws.
+
+````
+table posts {
+  id:        sequence
+  author_id: ref(users.id, per_parent: 0..20)
+}
+generate users: 50
+````
+
+Constraints:
+- Only one field per child table may use `per_parent`.
+- A child driven by per_parent must not have an explicit `generate`
+  directive — the count comes from the parent.
+- The parent's column must exist (typos are surfaced as
+  `UndeclaredRefTable` / `UndeclaredRefColumn` exactly as for a plain
+  `ref()`).
+
+See `examples/blog.dataseed` for a realistic shape.
+
 ### CLI flags for multi-table files
 
 ```
@@ -256,6 +280,7 @@ the three CLI invocations below:
 | `dataseed plant examples/orders.dataseed --seed 123 --count 100` (Phase 1)  | `eae65906e81077b9f1534c6d76b8691027afe100f9338679004fa97d94646c02` |
 | `dataseed plant examples/shop.dataseed   --seed 42`               (Phase 3) | `f13feb9a2a3275f4faaca6e8186a69ce169100023af5bf2ab34d4783f42b22f3` |
 | `dataseed plant examples/fleet.dataseed  --seed 42`               (Phase 3) | `2eacca59c9eee642ed3ce542e08372bd44b3534bf1b28bdfc2d3801d631255f5` |
+| `dataseed plant examples/blog.dataseed   --seed 42`               (Phase 4) | `881703fba4457302d84338829f41fc816927d575f0513f351f9abee37dc0cda1` |
 
 If you build on Linux x86_64, Windows, or another target and these
 hashes don't match, that's a bug — please open an issue with your
@@ -280,17 +305,16 @@ can pick which to remove.
 
 ## Scope
 
-Phases 1, 2, and 3 are shipped: parser + AST, semantic analysis,
+Phases 1, 2, 3, and 4 (in progress: `per_parent` for variable child counts) are shipped: parser + AST, semantic analysis,
 16 generators (10 scalar + 5 geospatial + `ref`), multi-table files
 with topological generation order and cycle detection, SQL / PostGIS /
 JSON output, deterministic generation, machine-readable `--json` catalog.
 
-Out of scope (planned for later phases): `per_parent: N..M` (each parent
-owns N–M children), distribution skew on refs (zipf/etc.), correlated
-refs (`order.created_at > user.signup_date`), nested JSON output, spatial
-relations ("orders within 1km of warehouse"), custom CRS beyond WGS84,
-custom templates, streaming output, parallel generation, and CSV / XML /
-Parquet output formats.
+Out of scope (planned for later phases): distribution skew on refs
+(zipf/etc.), correlated refs (`order.created_at > user.signup_date`),
+nested JSON output, spatial relations ("orders within 1km of warehouse"),
+custom CRS beyond WGS84, custom templates, streaming output, parallel
+generation, and CSV / XML / Parquet output formats.
 
 The bundled wordlist (`src/generators/data/words.txt`) and name lists are
 intentionally modest — enough to feel realistic for fixtures. Swap them
