@@ -34,6 +34,11 @@ pub(super) struct RelationsReport {
 /// One resolved per_parent ref-site inside the child table being scanned.
 /// Used only by the owner pass to decide whether a child has zero, one, or
 /// many owning parents, and to build the diagnostic if it has many.
+///
+/// The owner pass does NOT re-check target existence — the edge pass below
+/// already runs `UndeclaredRefTable`/`UndeclaredRefColumn` against every
+/// `ref()` call (including those with kwargs), so a typo in `T` or `C` is
+/// already reported there. The owner pass just records who owns whom.
 #[derive(Debug)]
 struct PerParentCandidate {
     parent_table: String,
@@ -57,10 +62,13 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
     // --- per_parent owner pass (runs BEFORE the MissingGenerate check
     // because owned children don't need an explicit `generate`).
     //
-    // For each table we collect the per_parent ref-sites whose target is
-    // resolvable. Zero sites → not owned; one site → record the owner and
-    // (if needed) reject any conflicting explicit `generate`; two or more
-    // → emit MultiplePerParentOwners and don't record an owner.
+    // For each table we collect every per_parent ref-site. We do NOT check
+    // target existence here — the edge pass below catches that for every
+    // ref() call (kwargs or not) and emits UndeclaredRefTable/Column. The
+    // owner pass just records ownership: zero sites → not owned; one site
+    // → record the owner and (if needed) reject any conflicting explicit
+    // `generate`; two or more → emit MultiplePerParentOwners and skip
+    // recording an owner.
     for table in &file.tables {
         let mut owners_in_this_table: Vec<PerParentCandidate> = Vec::new();
 
@@ -71,21 +79,9 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
             let Some(range) = per_parent_of(&field.call) else {
                 continue;
             };
-            let Some((parent_table, parent_column)) = extract_per_parent_target(&field.call)
-            else {
+            let Some((parent_table, parent_column)) = extract_target(&field.call) else {
                 continue;
             };
-            // Skip silently when the target is unresolved — the edge pass
-            // below will emit UndeclaredRefTable/Column for the same site.
-            let target_exists = file
-                .tables
-                .iter()
-                .find(|t| t.name == parent_table)
-                .map(|t| t.fields.iter().any(|f| f.name == parent_column))
-                .unwrap_or(false);
-            if !target_exists {
-                continue;
-            }
 
             owners_in_this_table.push(PerParentCandidate {
                 parent_table,
@@ -122,18 +118,20 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
                 let second = &owners_in_this_table[1];
                 report.errors.push(SemanticError::MultiplePerParentOwners {
                     child: table.name.clone(),
-                    first: PerParentSite {
-                        parent: first.parent_table.clone(),
-                        field: first.field_name.clone(),
-                        line: first.line,
-                        col: first.col,
-                    },
-                    second: PerParentSite {
-                        parent: second.parent_table.clone(),
-                        field: second.field_name.clone(),
-                        line: second.line,
-                        col: second.col,
-                    },
+                    sites: Box::new((
+                        PerParentSite {
+                            parent: first.parent_table.clone(),
+                            field: first.field_name.clone(),
+                            line: first.line,
+                            col: first.col,
+                        },
+                        PerParentSite {
+                            parent: second.parent_table.clone(),
+                            field: second.field_name.clone(),
+                            line: second.line,
+                            col: second.col,
+                        },
+                    )),
                 });
             }
         }
@@ -250,22 +248,14 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
     report
 }
 
-/// Return `Some(target.0, target.1)` iff the call shape matches the canonical
-/// `ref(T.C)` form. Catalog validation has already emitted errors for other
-/// shapes — we just skip them here.
+/// Return `Some((table, column))` iff the call has exactly one positional
+/// arg that is a `T.C` column reference. We deliberately tolerate kwargs
+/// here so the canonical `ref(T.C, per_parent: lo..hi)` form flows through
+/// the same edge-collection logic as plain `ref(T.C)` — that's how
+/// per_parent refs get target-existence diagnostics and contribute to the
+/// topo order and materialisation plan. Catalog validation has already
+/// emitted errors for other shapes; we just skip them here.
 fn extract_target(call: &Call) -> Option<(String, String)> {
-    if call.positional.len() != 1 || !call.kwargs.is_empty() {
-        return None;
-    }
-    match &call.positional[0] {
-        Value::ColumnRef { table, column } => Some((table.clone(), column.clone())),
-        _ => None,
-    }
-}
-
-/// Like `extract_target` but tolerant of kwargs — used by the per_parent
-/// owner pass, where the call shape is `ref(T.C, per_parent: lo..hi)`.
-fn extract_per_parent_target(call: &Call) -> Option<(String, String)> {
     if call.positional.len() != 1 {
         return None;
     }
@@ -637,6 +627,79 @@ mod tests {
             e,
             SemanticError::MultiplePerParentOwners { child, .. } if child == "xs"
         )));
+    }
+
+    #[test]
+    fn per_parent_undeclared_parent_table_reported() {
+        // Regression for the kwarg-skip bug: before this fix, a per_parent
+        // ref slipped past extract_target() (which rejected any kwargs) and
+        // never reached the existence check, so a bad parent name produced
+        // no diagnostic at semantic-check time and panicked later at runtime.
+        // Note: a bare `generate posts: 1` is needed so the parser accepts
+        // the file. The semantic check is what we're exercising — it should
+        // report the undeclared parent regardless of whether the child
+        // ends up owned or not.
+        let src = r#"
+            output: sql
+            table posts {
+              id: sequence
+              author_id: ref(ghosts.id, per_parent: 1..3)
+            }
+            generate posts: 1
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(
+            report.errors.iter().any(|e| matches!(
+                e,
+                SemanticError::UndeclaredRefTable { table, .. } if table == "ghosts"
+            )),
+            "expected UndeclaredRefTable(ghosts); got: {:?}",
+            report.errors,
+        );
+    }
+
+    #[test]
+    fn per_parent_contributes_topo_edge() {
+        // Regression: the topo pass used to skip per_parent refs entirely,
+        // so children could come before their parents in the generation
+        // order and `referenced[parent].column` was never populated — the
+        // pool was empty when the child tried to draw from it.
+        let src = r#"
+            output: sql
+            table users { id: sequence }
+            table posts {
+              id: sequence
+              author_id: ref(users.id, per_parent: 1..3)
+            }
+            generate users: 5
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        let users_idx = report
+            .topo_order
+            .iter()
+            .position(|t| t == "users")
+            .expect("users in topo order");
+        let posts_idx = report
+            .topo_order
+            .iter()
+            .position(|t| t == "posts")
+            .expect("posts in topo order");
+        assert!(
+            users_idx < posts_idx,
+            "users must precede posts; got {:?}",
+            report.topo_order
+        );
+        assert!(
+            report
+                .referenced
+                .get("users")
+                .map_or(false, |cols| cols.contains("id")),
+            "users.id must be in the materialisation plan; got {:?}",
+            report.referenced,
+        );
     }
 
     #[test]

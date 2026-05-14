@@ -231,10 +231,14 @@ pub enum SemanticError {
 
     /// A child table has more than one field using `per_parent`. Each child
     /// table can only have one owning parent.
+    ///
+    /// The two ref-sites are boxed to keep `SemanticError`'s stack size
+    /// below the `clippy::result_large_err` threshold — without the Box,
+    /// `Result<_, SemanticError>` exceeds 128 bytes and trips the lint
+    /// across every public function that returns one.
     MultiplePerParentOwners {
         child: String,
-        first: PerParentSite,
-        second: PerParentSite,
+        sites: Box<(PerParentSite, PerParentSite)>,
     },
 }
 
@@ -365,11 +369,11 @@ impl fmt::Display for SemanticError {
                 f,
                 "Error: table `{child}` is driven by `per_parent` on `{field}` (references `{parent}`), but an explicit `generate {child}: …` directive is present at line {generate_line}, column {generate_col}\nHint: remove the explicit count — per_parent derives it from the parent."
             ),
-            SemanticError::MultiplePerParentOwners { child, first, second } => write!(
+            SemanticError::MultiplePerParentOwners { child, sites } => write!(
                 f,
                 "Error: table `{child}` has two fields using `per_parent`: `{}` (refs `{}`, at line {}, col {}) and `{}` (refs `{}`, at line {}, col {})\nHint: only one field per child table may use per_parent.",
-                first.field, first.parent, first.line, first.col,
-                second.field, second.parent, second.line, second.col,
+                sites.0.field, sites.0.parent, sites.0.line, sites.0.col,
+                sites.1.field, sites.1.parent, sites.1.line, sites.1.col,
             ),
         }
     }
