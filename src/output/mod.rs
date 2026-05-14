@@ -12,6 +12,7 @@ use crate::SemanticError;
 
 mod json;
 mod sql;
+pub mod ddl;
 
 /// Per-row engine context handed to every generator's `produce`. Bundles
 /// everything a generator might read at run-time:
