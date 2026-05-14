@@ -282,13 +282,33 @@ fn build_value(pair: Pair<Rule>) -> Result<Value, ParseError> {
         }
         Rule::range => {
             let (line, col) = pair.line_col();
+            let raw_text = pair.as_str().to_string();
             let mut it = pair.into_inner();
             let lo_pair = it.next().expect("range: lo");
             let hi_pair = it.next().expect("range: hi");
-            let lo: i64 = lo_pair.as_str().parse().expect("integer rule");
-            let hi: i64 = hi_pair.as_str().parse().expect("integer rule");
+            let (lo_line, lo_col) = lo_pair.line_col();
+            let (hi_line, hi_col) = hi_pair.line_col();
+            let lo_raw = lo_pair.as_str().to_string();
+            let hi_raw = hi_pair.as_str().to_string();
+            let lo: i64 = lo_raw.parse().map_err(|_| ParseError::InvalidRange {
+                line: lo_line,
+                col: lo_col,
+                raw: lo_raw.clone(),
+                reason: "lower bound is out of range for a 64-bit integer",
+            })?;
+            let hi: i64 = hi_raw.parse().map_err(|_| ParseError::InvalidRange {
+                line: hi_line,
+                col: hi_col,
+                raw: hi_raw.clone(),
+                reason: "upper bound is out of range for a 64-bit integer",
+            })?;
             if hi < lo {
-                return Err(ParseError::InvalidRange { line, col, lo, hi });
+                return Err(ParseError::InvalidRange {
+                    line,
+                    col,
+                    raw: raw_text,
+                    reason: "lo must be <= hi",
+                });
             }
             Ok(Value::Range { lo, hi })
         }

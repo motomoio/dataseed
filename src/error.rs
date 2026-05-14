@@ -54,9 +54,16 @@ pub enum ParseError {
     /// more than one table.
     BareGenerateInMultiTableFile { line: usize, col: usize },
 
-    /// A range literal `N..M` with `hi < lo` (e.g. `5..1`). Empty/reversed
-    /// ranges are caught here so downstream consumers can assume `lo <= hi`.
-    InvalidRange { line: usize, col: usize, lo: i64, hi: i64 },
+    /// A range literal `N..M` that is invalid — either a bound overflows
+    /// `i64`, or `hi < lo` (e.g. `5..1`). The `raw` field carries the
+    /// offending text and `reason` explains the specific problem so
+    /// downstream consumers can assume `lo <= hi`.
+    InvalidRange {
+        line: usize,
+        col: usize,
+        raw: String,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -110,9 +117,9 @@ impl fmt::Display for ParseError {
                     "Error: bare `generate N` at line {line}, column {col} is only allowed in single-table files\nHint: this file declares multiple tables — use `generate NAME: N` to say which table this count applies to."
                 )
             }
-            ParseError::InvalidRange { line, col, lo, hi } => write!(
+            ParseError::InvalidRange { line, col, raw, reason } => write!(
                 f,
-                "Error: invalid range `{lo}..{hi}` at line {line}, column {col}: lo must be <= hi"
+                "Error: invalid range `{raw}` at line {line}, column {col}: {reason}"
             ),
         }
     }

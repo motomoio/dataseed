@@ -400,3 +400,40 @@ fn parses_range_literal_in_kwarg() {
         other => panic!("expected Range, got {other:?}"),
     }
 }
+
+#[test]
+fn range_with_hi_less_than_lo_is_rejected() {
+    let src = r#"
+        output: sql
+        table users { id: sequence }
+        table posts {
+          id: sequence
+          author_id: ref(users.id, per_parent: 5..1)
+        }
+        generate users: 1
+    "#;
+    match dataseed::parser::parse(src) {
+        Err(dataseed::ParseError::InvalidRange { reason, .. }) => {
+            assert!(reason.contains("lo must be <= hi"), "got reason: {reason}");
+        }
+        other => panic!("expected InvalidRange, got: {other:?}"),
+    }
+}
+
+#[test]
+fn range_with_equal_bounds_parses() {
+    use dataseed::ast::Value;
+    let src = r#"
+        output: sql
+        table users { id: sequence }
+        table posts {
+          id: sequence
+          author_id: ref(users.id, per_parent: 3..3)
+        }
+        generate users: 1
+    "#;
+    let file = dataseed::parser::parse(src).expect("parse ok");
+    let posts = file.table("posts").unwrap();
+    let (_, v) = posts.fields[1].call.kwargs.iter().find(|(k, _)| k == "per_parent").unwrap();
+    assert!(matches!(v, Value::Range { lo: 3, hi: 3 }));
+}
