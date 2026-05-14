@@ -1,0 +1,31 @@
+# Classic users / orders relation as plain SQL.
+#
+# Use case: seeding any SQL database for testing a basic foreign-key
+# join. `orders.user_id` is uniformly drawn (with replacement) from the
+# generated `users.id` values — so every order is owned by some user,
+# and a single user may own multiple orders.
+#
+# Loading:
+#   dataseed plant examples/shop.dataseed --seed 42 -o shop.sql
+#   sqlite3 shop.db < shop.sql
+#   # or: psql -d shop -f shop.sql
+
+output: sql
+
+table users {
+  id:        sequence
+  name:      randomName()
+  email:     randomEmail()
+  signed_up: randomDate("2020-01-01", "2024-12-31")
+}
+
+table orders {
+  id:        sequence
+  user_id:   ref(users.id)
+  total:     randomRealNumber(5.0, 999.99, decimals: 2)
+  status:    randomChoice("pending", "shipped", "delivered", "cancelled")
+  placed_on: randomDate("2024-01-01", "2024-12-31")
+}
+
+generate users: 100
+generate orders: 1000

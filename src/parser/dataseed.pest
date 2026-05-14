@@ -1,0 +1,98 @@
+// Dataseed DSL grammar — Phase 1
+//
+// A .dataseed file describes one table's worth of generated data.
+// Top-level form:
+//
+//     output: sql
+//     table: trees
+//     schema { id: sequence  species: randomChoice("oak", "birch") }
+//     generate 10000
+//
+// Whitespace is insignificant between tokens (including newlines).
+// Comments start with `#` and run to end of line.
+
+// ----- Top-level structure -----------------------------------------------
+//
+// Two equivalent ways to declare a table:
+//
+//   Legacy (Phase 1+): one `table: NAME` directive followed somewhere in
+//   the file by exactly one `schema { ... }` block. Only allowed when
+//   there's a single table.
+//
+//   Phase 3 form:      `table NAME { fields... }` — a self-contained block.
+//   Required when the file declares more than one table.
+//
+// `generate` similarly has two forms:
+//   `generate N`         — bare, only legal in single-table files
+//   `generate NAME: N`   — required for multi-table files
+
+file        = { SOI ~ directive+ ~ EOI }
+
+directive   = _{ output_dir | table_block | table_dir | schema_block | generate_dir }
+
+output_dir  = { "output" ~ ":" ~ output_kind }
+output_kind = { "sql" | "postgis" | "json" }
+
+// Legacy form.
+table_dir    = { "table" ~ ":" ~ ident }
+schema_block = { "schema" ~ "{" ~ field_def* ~ "}" }
+
+// Phase 3 form. Note the absence of `:` between `table` and the name,
+// which disambiguates it from `table_dir` at parse time.
+table_block  = { "table" ~ ident ~ "{" ~ field_def* ~ "}" }
+
+field_def    = { ident ~ ":" ~ call }
+
+// generate_dir admits both forms — the `(ident ~ ":")?` is the optional
+// table-name prefix.
+generate_dir = { "generate" ~ (ident ~ ":")? ~ integer }
+
+// ----- Generator calls ---------------------------------------------------
+//
+// Two forms:
+//   foo                              -- bare identifier, no parens (e.g. `sequence`)
+//   foo(arg1, arg2, kwarg: value)    -- with args; positional first, then kwargs
+//
+// We accept the bare form for ergonomics. With-parens always allowed.
+
+call         = { ident ~ call_args? }
+call_args    = { "(" ~ arg_list? ~ ")" }
+arg_list     = { arg ~ ("," ~ arg)* ~ ","? }
+arg          = _{ kwarg | positional }
+kwarg        = { ident ~ ":" ~ value }
+positional   = { value }
+
+// ----- Values ------------------------------------------------------------
+//
+// Order matters: `boolean` must precede any rule that could match
+// `true`/`false` as a bare `ident`. Pest tries alternatives left-to-right,
+// so keep `boolean` (and any future keyword-like literal) ahead of `ident`
+// in any rule that admits both. `value` here doesn't admit `ident` at all,
+// but the rule below is the canonical reference point.
+//
+// Arrays accept any `value`, so they nest. Phase 2 generators only use
+// number arrays (e.g. `bbox: [3.3, 50.7, 7.2, 53.5]`), but mixed/nested
+// arrays parse fine and are type-checked downstream.
+
+// `column_ref` (Phase 3) must precede `boolean` so `users.id` parses as a
+// reference rather than tripping on `true`/`false` keyword-lookahead. The
+// dot makes the rule unambiguous — a bare `true`/`false` without a `.`
+// still falls through to `boolean`.
+value    = _{ number | string | column_ref | boolean | array }
+number   = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+integer  = @{ "-"? ~ ASCII_DIGIT+ }
+boolean  = { "true" | "false" }
+string   = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ (escape | (!("\"" | "\\") ~ ANY))* }
+escape   = _{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
+array    = { "[" ~ (value ~ ("," ~ value)*)? ~ ","? ~ "]" }
+column_ref   = { ident ~ "." ~ ident }
+
+// ----- Identifiers -------------------------------------------------------
+
+ident    = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// ----- Whitespace and comments (handled implicitly between tokens) ------
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "#" ~ (!"\n" ~ ANY)* }

@@ -1,0 +1,24 @@
+# Agricultural fields as PostGIS polygons.
+#
+# Use case: seeding a PostGIS-enabled Postgres for testing geospatial
+# ETL pipelines, map rendering, or proximity queries.
+#
+# Loading:
+#   dataseed plant examples/fields.dataseed --seed 42 -o fields.sql
+#   psql -d gis_test -f fields.sql
+#
+# The `geom` column is a polygon (single ring, CCW, closed) in WGS84.
+# Pair with: CREATE INDEX fields_geom_gist ON fields USING GIST(geom);
+
+output: postgis
+table: fields
+
+schema {
+  id:        sequence
+  crop:      randomChoice("wheat", "corn", "potato", "sugar_beet", "rapeseed", "barley")
+  hectares:  randomRealNumber(0.5, 80.0, decimals: 2)
+  planted:   randomDate("2024-03-01", "2024-05-31")
+  geom:      randomPolygon(bbox: [3.3, 50.7, 7.2, 53.5], vertices: 7, irregularity: 0.35)
+}
+
+generate 500

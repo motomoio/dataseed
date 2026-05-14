@@ -1,0 +1,16 @@
+# Users table — JSON output. Demonstrates randomName, randomEmail,
+# randomUuid, and a kwarg with explicit defaults.
+
+output: json
+table: users
+
+schema {
+  id:           randomUuid()
+  full_name:    randomName()
+  email:        randomEmail()
+  signups:      randomInt(0, 50)
+  active:       randomBool(weight: 0.75)
+  joined:       randomDate("2020-01-01", "2024-12-31")
+}
+
+generate 100

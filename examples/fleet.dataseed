@@ -1,0 +1,51 @@
+# Vehicles, drivers, and trips for a fleet-management test database.
+# PostGIS-flavored output — each trip's `route` is a LineString geometry.
+#
+# Three tables, two relation edges:
+#
+#   drivers  (no refs)
+#   vehicles (no refs)
+#   trips    refs drivers.id AND vehicles.id
+#
+# Topological generation order: drivers, vehicles, trips
+# (drivers and vehicles tie-break alphabetically).
+#
+# Loading:
+#   dataseed plant examples/fleet.dataseed --seed 42 -o fleet.sql
+#   psql -d fleet -f fleet.sql
+#
+# After loading, suggested indexes:
+#   CREATE INDEX trips_route_gist ON trips USING GIST(route);
+#   CREATE INDEX trips_driver_id  ON trips(driver_id);
+#   CREATE INDEX trips_vehicle_id ON trips(vehicle_id);
+
+output: postgis
+
+table drivers {
+  id:          sequence
+  name:        randomName()
+  email:       randomEmail()
+  license_no:  randomUuid()
+  hired_on:    randomDate("2018-01-01", "2024-12-31")
+}
+
+table vehicles {
+  id:           sequence
+  plate:        randomChoice("AA-001-A", "AB-100-B", "AC-200-C", "AD-300-D", "AE-400-E", "AF-500-F", "AG-600-G", "AH-700-H")
+  make:         randomChoice("Volvo", "Scania", "DAF", "MAN", "Mercedes-Benz", "Iveco")
+  capacity_kg:  randomInt(3500, 26000)
+  in_service:   randomBool(weight: 0.93)
+}
+
+table trips {
+  id:           sequence
+  driver_id:    ref(drivers.id)
+  vehicle_id:   ref(vehicles.id)
+  distance_km:  randomRealNumber(2.0, 850.0, decimals: 2)
+  started_at:   randomDate("2024-01-01", "2024-12-31")
+  route:        randomLineString(bbox: [3.3, 50.7, 7.2, 53.5], segments: 10, jitter: 0.4)
+}
+
+generate drivers: 30
+generate vehicles: 25
+generate trips: 200

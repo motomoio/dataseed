@@ -1,0 +1,26 @@
+# Bike paths as GeoJSON LineStrings.
+#
+# Use case: feeding a MapLibre/Leaflet front-end during development,
+# or testing routing / GeoJSON-handling code. Output is a JSON array of
+# objects where each `path` field is an inline GeoJSON LineString.
+#
+# Loading:
+#   dataseed plant examples/bike_routes.dataseed --seed 42 -o routes.json
+#   # then drop into a viewer:
+#   jq '{type: "FeatureCollection", features: [.[] | {type: "Feature", geometry: .path, properties: {id, distance_km, surface}}]}' routes.json > routes.geojson
+#
+# Higher `jitter` produces more meandering routes; segments controls
+# the polyline density.
+
+output: json
+table: bike_routes
+
+schema {
+  id:           sequence
+  surface:      randomChoice("asphalt", "concrete", "brick", "gravel")
+  distance_km:  randomRealNumber(0.5, 25.0, decimals: 2)
+  approved:     randomBool(weight: 0.88)
+  path:         randomLineString(bbox: [3.3, 50.7, 7.2, 53.5], segments: 12, jitter: 0.4)
+}
+
+generate 50

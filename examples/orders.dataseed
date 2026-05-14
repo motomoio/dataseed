@@ -1,0 +1,16 @@
+# Orders table — SQL output. Heavier on numeric generators and
+# demonstrates sequence(start: ...) and decimal control on a money field.
+
+output: sql
+table: orders
+
+schema {
+  id:          sequence(start: 10000)
+  status:      randomChoice("pending", "shipped", "delivered", "cancelled")
+  total:       randomRealNumber(5.0, 999.99, decimals: 2)
+  quantity:    randomInt(1, 12)
+  paid:        randomBool(weight: 0.92)
+  placed_on:   randomDate("2024-01-01", "2024-12-31")
+}
+
+generate 500

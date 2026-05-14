@@ -1,0 +1,13 @@
+# Tiny dictionary — exercises randomWord and shows that bare generator
+# calls (no parens) are accepted.
+
+output: sql
+table: dictionary
+
+schema {
+  id:    sequence
+  word:  randomWord()
+  alt:   randomWord
+}
+
+generate 50

@@ -1,0 +1,15 @@
+# Sensor readings — high-volume JSON. Shows decimal precision and a
+# weighted boolean (most sensors online most of the time).
+
+output: json
+table: sensor_readings
+
+schema {
+  reading_id:  sequence
+  sensor:      randomChoice("temp-a1", "temp-a2", "humidity-b1", "pressure-c1")
+  value:       randomRealNumber(-40.0, 120.0, decimals: 4)
+  online:      randomBool(weight: 0.97)
+  recorded_at: randomDate("2025-01-01", "2025-12-31")
+}
+
+generate 2500

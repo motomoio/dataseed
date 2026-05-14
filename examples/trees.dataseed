@@ -1,0 +1,12 @@
+output: sql
+table: trees
+
+schema {
+  id:      sequence
+  species: randomChoice("oak", "birch", "pine", "maple")
+  height:  randomRealNumber(1.0, 45.0, decimals: 2)
+  planted: randomDate("1990-01-01", "2024-12-31")
+  alive:   randomBool(weight: 0.85)
+}
+
+generate 10000

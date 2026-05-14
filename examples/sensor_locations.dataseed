@@ -1,0 +1,27 @@
+# IoT sensors clustered around a central facility, as plain WKT points.
+#
+# Use case: testing radius queries, clustering, and proximity joins
+# without requiring PostGIS — the `location` column is a WKT string,
+# loadable into SQLite/MySQL/plain Postgres equally.
+#
+# Loading:
+#   dataseed plant examples/sensor_locations.dataseed --seed 42 -o sensors.sql
+#   sqlite3 test.db < sensors.sql
+#
+# `randomPointNear` uses an equirectangular approximation for the
+# radius-to-degrees conversion (good for radii up to ~100 km).
+
+output: sql
+table: sensor_locations
+
+schema {
+  id:           sequence(start: 1000)
+  sensor_type:  randomChoice("temp", "humidity", "co2", "pressure", "lux")
+  installed:    randomDate("2024-01-01", "2025-04-30")
+  battery_pct:  randomInt(15, 100)
+  online:       randomBool(weight: 0.96)
+  # Within 2km of the Amsterdam Zuidoost data centre.
+  location:     randomPointNear(center: [4.945, 52.31], radius_m: 2000)
+}
+
+generate 200
