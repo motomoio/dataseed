@@ -70,7 +70,7 @@ fn per_parent_uses_full_range() {
 }
 
 #[test]
-fn per_parent_assigns_child_rows_round_robin_within_quota() {
+fn per_parent_assigns_exact_quota_per_parent_contiguously() {
     let src = r#"
         output: sql
         table parents {
@@ -83,6 +83,7 @@ fn per_parent_assigns_child_rows_round_robin_within_quota() {
         generate parents: 4
     "#;
     let out = render_to_string(src, 1);
+
     // Each parent (1..=4) should appear exactly 3 times in kids' parent_id column.
     for parent in 1..=4 {
         let occurrences = out
@@ -91,4 +92,84 @@ fn per_parent_assigns_child_rows_round_robin_within_quota() {
             .count();
         assert_eq!(occurrences, 3, "parent_id={parent} should appear 3 times, got {occurrences}");
     }
+
+    // Engine layout is contiguous-block: parent 1's children come before parent 2's,
+    // etc. Verify by extracting the parent_id sequence from kids' rows.
+    let kids_section_start = out
+        .find("INSERT INTO kids")
+        .expect("INSERT INTO kids must appear");
+    let kids_section = &out[kids_section_start..];
+    let mut parent_seq: Vec<u64> = Vec::new();
+    for line in kids_section.lines() {
+        // Lines look like:  "  (1, 1)," — capture the second column.
+        let trimmed = line.trim();
+        if !trimmed.starts_with("(") { continue; }
+        // strip leading "(" and trailing ")," or ");"
+        let inner = trimmed.trim_start_matches('(').trim_end_matches(',').trim_end_matches(';').trim_end_matches(')');
+        let parts: Vec<&str> = inner.split(", ").collect();
+        if parts.len() != 2 { continue; }
+        if let Ok(pid) = parts[1].parse::<u64>() {
+            parent_seq.push(pid);
+        }
+    }
+    assert_eq!(parent_seq.len(), 12, "expected 12 kids rows, got {}", parent_seq.len());
+    // Contiguous: rows 0..3 have parent_id 1, rows 3..6 have parent_id 2, etc.
+    for parent in 1..=4u64 {
+        for i in 0..3 {
+            let idx = (parent as usize - 1) * 3 + i;
+            assert_eq!(parent_seq[idx], parent, "kid row {idx} should have parent_id={parent}, got {}", parent_seq[idx]);
+        }
+    }
+}
+
+#[test]
+fn per_parent_does_not_force_unrelated_refs() {
+    // A child table has two refs: one with per_parent (to parents), one plain (to categories).
+    // The per_parent quota must drive child counts and force parents.id assignment,
+    // but the plain ref must keep uniform-random behaviour against categories.
+    let src = r#"
+        output: sql
+        table parents {
+          id: sequence
+        }
+        table categories {
+          id: sequence
+        }
+        table kids {
+          id:          sequence
+          parent_id:   ref(parents.id, per_parent: 5..5)
+          category_id: ref(categories.id)
+        }
+        generate parents: 4
+        generate categories: 10
+    "#;
+    let out = render_to_string(src, 2026);
+
+    // 4 parents × 5 kids each = 20 kids rows.
+    let kids_section_start = out
+        .find("INSERT INTO kids")
+        .expect("INSERT INTO kids must appear");
+    let kids_section = &out[kids_section_start..];
+
+    let mut categories_seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    let mut row_count = 0;
+    for line in kids_section.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("(") { continue; }
+        let inner = trimmed.trim_start_matches('(').trim_end_matches(',').trim_end_matches(';').trim_end_matches(')');
+        let parts: Vec<&str> = inner.split(", ").collect();
+        if parts.len() != 3 { continue; }
+        row_count += 1;
+        if let Ok(cat) = parts[2].parse::<u64>() {
+            categories_seen.insert(cat);
+        }
+    }
+    assert_eq!(row_count, 20, "expected 20 kids rows");
+    // The plain ref to categories should sample more than one value across 20 rows
+    // (if it were "forced" to a single index, only one category would appear).
+    assert!(
+        categories_seen.len() > 1,
+        "expected plain ref to categories to be uniformly random across 20 rows, only saw {:?}",
+        categories_seen
+    );
 }

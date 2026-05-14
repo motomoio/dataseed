@@ -112,6 +112,14 @@ pub fn render_plan(
         // For each parent row, draw a quota k ∈ [lo, hi] inclusive, then
         // build a flat parent-index vector of length = sum(quotas) where
         // each entry is the parent row index for the child at that row.
+        //
+        // Determinism contract: RNG draws per table happen in two phases.
+        //   (1) Per-parent quota draws (one per parent row, only when this child
+        //       table is per_parent-owned). Skipped entirely otherwise.
+        //   (2) Per-row generator draws (one batch per child row).
+        // Reordering phases or interleaving them WILL change the byte stream
+        // for any seed — see the SHA table in README for the contract this
+        // satisfies.
         let owned = plan.per_parent_owners.get(table_name).cloned();
         let per_parent_assignment: Option<(String, String, Vec<usize>)> =
             owned.as_ref().map(|(parent, parent_col, (lo, hi))| {
@@ -183,7 +191,7 @@ pub fn render_plan(
         } else {
             // Generate-but-don't-emit — still drive the row loop so refs
             // resolve. The pool gets populated as a side effect.
-            drain_into_pool_with_forced(table, &mut gens, count, rng, &mut pool, forced);
+            drain_into_pool(table, &mut gens, count, rng, &mut pool, forced);
         }
     }
 
@@ -204,7 +212,7 @@ fn should_emit(plan: &RenderPlan, table: &str) -> bool {
 /// Used when `--table NAME` filters out a dependency's emission but we
 /// still need its values materialised. Honours a per-parent assignment if
 /// the filtered-out table is per_parent-owned.
-fn drain_into_pool_with_forced(
+fn drain_into_pool(
     table: &crate::ast::Table,
     gens: &mut [Box<dyn Generator>],
     count: u64,
