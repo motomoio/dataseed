@@ -4,7 +4,10 @@
 //!
 //! 1. Does the target table exist? → `UndeclaredRefTable`
 //! 2. Does the target column exist in that table? → `UndeclaredRefColumn`
-//! 3. Is the table referencing itself? → `SelfReference` (Phase 4 may relax this)
+//! 3. Is the self-reference legal? → `IllegalSelfReference` if the target
+//!    column itself depends on another column in the same row (cascading
+//!    dependency). Self-refs to independent columns are allowed and recorded
+//!    in `self_ref_tables` so the engine can switch on two-pass generation.
 //! 4. Do the directed ref-edges form a cycle? → `CyclicReference` with every
 //!    edge in the cycle named for clarity.
 //!
@@ -29,6 +32,9 @@ pub(super) struct RelationsReport {
     pub referenced: BTreeMap<String, BTreeSet<String>>,
     /// child table → (parent table, parent column, (lo, hi))
     pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
+    /// Tables with at least one legal self-reference. The engine reads this
+    /// to enable two-pass row generation for those tables.
+    pub self_ref_tables: BTreeSet<String>,
 }
 
 /// One resolved per_parent ref-site inside the child table being scanned.
@@ -207,14 +213,38 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
                     return;
                 }
 
-                // 3) no self-references
+                // 3) Self-references: allowed iff the target column is
+                // "independent" — its own call contains no column refs
+                // anywhere (no cascading dependencies). Otherwise reject.
                 if table_name == parent_table {
-                    report.errors.push(SemanticError::SelfReference {
-                        line,
-                        col,
-                        table: parent_table.to_string(),
-                        column: parent_column.to_string(),
-                    });
+                    let target_field = file
+                        .tables
+                        .iter()
+                        .find(|t| t.name == parent_table)
+                        .and_then(|t| t.fields.iter().find(|f| f.name == parent_column));
+                    let target_uses_column_ref = match target_field {
+                        Some(f) => call_has_any_column_ref(&f.call),
+                        // Target doesn't exist; UndeclaredRefColumn already
+                        // emitted above so we'd never reach here. Defensive.
+                        None => false,
+                    };
+                    if target_uses_column_ref {
+                        report.errors.push(SemanticError::IllegalSelfReference {
+                            line,
+                            col,
+                            table: parent_table.to_string(),
+                            column: parent_column.to_string(),
+                            reason: format!(
+                                "the target column `{parent_table}.{parent_column}` itself references another column"
+                            ),
+                        });
+                    } else {
+                        // Legal self-ref: record the table so the engine can
+                        // enable two-pass generation for it.
+                        report.self_ref_tables.insert(table_name.to_string());
+                    }
+                    // Intra-table edge; never contributes to the inter-table
+                    // topo graph regardless of legality.
                     return;
                 }
 
@@ -307,6 +337,24 @@ where
     for (_, v) in &call.kwargs {
         walk(v, call.line, call.col, &mut f);
     }
+}
+
+/// `true` iff `call` (or any value reachable from it — positional args,
+/// kwargs, nested array items) contains at least one `Value::ColumnRef`.
+///
+/// Used by the self-reference check to classify the target column as
+/// "independent" (no column refs in its generator call) or "dependent"
+/// (reads some other column in the same row, possibly transitively).
+/// Phase 4.4 only permits self-refs to independent columns.
+fn call_has_any_column_ref(call: &Call) -> bool {
+    fn walk(v: &Value) -> bool {
+        match v {
+            Value::ColumnRef { .. } => true,
+            Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    call.positional.iter().any(walk) || call.kwargs.iter().any(|(_, v)| walk(v))
 }
 
 /// If `call` carries a `per_parent: lo..hi` kwarg with non-negative bounds,
@@ -513,22 +561,60 @@ mod tests {
     }
 
     #[test]
-    fn self_reference_rejected() {
+    fn self_reference_to_sequence_is_allowed() {
         let src = r#"
             output: sql
-            table users {
-              id: sequence
-              parent_id: ref(users.id)
+            table employees {
+              id:         sequence
+              manager_id: ref(employees.id)
             }
-            generate users: 1
+            generate employees: 100
         "#;
         let file = parse_ok(src);
         let report = check(&file);
-        assert!(report.errors.iter().any(|e| matches!(
-            e,
-            SemanticError::SelfReference { table, column, .. }
-                if table == "users" && column == "id"
-        )));
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        assert!(report.self_ref_tables.contains("employees"));
+    }
+
+    #[test]
+    fn self_reference_to_dependent_column_rejected() {
+        let src = r#"
+            output: sql
+            table employees {
+              id:         sequence
+              manager_id: ref(employees.id)
+              buddy_id:   ref(employees.manager_id)
+            }
+            generate employees: 5
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(!report.is_ok());
+        let illegal = report
+            .errors
+            .iter()
+            .find(|e| matches!(e, SemanticError::IllegalSelfReference { .. }));
+        assert!(
+            illegal.is_some(),
+            "expected IllegalSelfReference, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn self_reference_to_independent_random_generator_is_allowed() {
+        let src = r#"
+            output: sql
+            table comments {
+              id:        sequence
+              parent_id: ref(comments.id)
+              body:      randomWord()
+            }
+            generate comments: 10
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
     }
 
     #[test]

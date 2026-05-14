@@ -37,6 +37,10 @@ pub struct SemanticReport {
     /// the relations pass when a child has exactly one `per_parent` ref —
     /// the engine reads this to derive child row counts from parent draws.
     pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
+    /// Tables that contain at least one legal self-reference (a `ref()` from
+    /// a field inside table `T` to another column of `T`). The engine uses
+    /// this to switch on two-pass generation for those tables.
+    pub self_ref_tables: BTreeSet<String>,
 }
 
 impl SemanticReport {
@@ -63,6 +67,7 @@ pub fn check(file: &File) -> SemanticReport {
     report.topo_order = rel.topo_order;
     report.referenced = rel.referenced;
     report.per_parent_owners = rel.per_parent_owners;
+    report.self_ref_tables = rel.self_ref_tables;
 
     report
 }

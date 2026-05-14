@@ -189,13 +189,15 @@ pub enum SemanticError {
         column: String,
     },
 
-    /// `ref(self.X)` — a field inside table `T` refs `T.X`. Phase 3 forbids
-    /// this; Phase 4 may allow correlated within-table refs.
-    SelfReference {
+    /// `ref(self_table.col)` where the target column depends on another column
+    /// in the same table. Phase 4.4 allows self-refs only to independent
+    /// columns (no cascading dependencies).
+    IllegalSelfReference {
         line: usize,
         col: usize,
         table: String,
         column: String,
+        reason: String,
     },
 
     /// A declared table has no `generate` directive.
@@ -323,10 +325,10 @@ impl fmt::Display for SemanticError {
                     "Error: `ref({table}.{column})` at line {line}, column {col}: table `{table}` has no field named `{column}`"
                 )
             }
-            SemanticError::SelfReference { line, col, table, column } => {
+            SemanticError::IllegalSelfReference { line, col, table, column, reason } => {
                 write!(
                     f,
-                    "Error: self-reference at line {line}, column {col}: `{table}` cannot `ref({table}.{column})` itself\nHint: Phase 3 forbids self-references — split into two tables, or wait for Phase 4 (correlated refs)."
+                    "Error: illegal self-reference at line {line}, column {col}: `{table}.{column}` — {reason}\nHint: self-references are allowed only to columns generated independently of other columns in the same row (e.g. `sequence`, `randomUuid`)."
                 )
             }
             SemanticError::MissingGenerate { table, table_line, table_col } => {
