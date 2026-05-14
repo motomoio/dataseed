@@ -329,7 +329,8 @@ impl Generator for RandomPointNear {
         // is byte-stable.
         let (clon, clat) = self.center.resolve(rng, ctx).unwrap_or_else(|| {
             panic!(
-                "randomPointNear: center ref couldn't be resolved (parent pool empty or column not a geometry:point)"
+                "randomPointNear: failed to resolve `center` — \
+                 the target column may be empty or not a geometry:point"
             );
         });
 

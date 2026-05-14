@@ -47,7 +47,22 @@ impl<T: Clone> Resolved<T> {
                 if values.is_empty() {
                     return None;
                 }
-                let idx = distribution.draw(rng, values.len());
+                // Honour the engine-forced parent if it targets the same parent
+                // *table* we do. The forced_parent's `parent_idx` is a row
+                // index into that parent table, so it's valid for any of the
+                // parent's materialized columns — that's what couples
+                // per_parent-driven child rows to nested refs reading sibling
+                // columns of the same parent. Example: a sensor with quota-
+                // assigned warehouse N (via ref(warehouses.id, per_parent))
+                // must also sample its `randomPointNear(center: ref(
+                // warehouses.location))` near warehouse N — same parent row,
+                // different column.
+                let idx = match ctx.forced_parent {
+                    Some((pt, _pc, parent_idx)) if pt == table.as_str() => {
+                        parent_idx % values.len()
+                    }
+                    _ => distribution.draw(rng, values.len()),
+                };
                 cast(&values[idx])
             }
         }
@@ -126,6 +141,48 @@ mod tests {
         let mut rng = SeedRng::from_seed(1);
         let ctx = empty_ctx(&pool);
         assert!(r.resolve(&mut rng, &ctx).is_none());
+    }
+
+    #[test]
+    fn ref_honours_forced_parent_when_target_matches() {
+        let mut referenced: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        referenced.entry("w".into()).or_default().insert("loc".into());
+        let mut pool = GeneratedPool::with_plan(referenced);
+        pool.push("w", "loc", Cell::Geometry(Geometry::Point { lon: 1.0, lat: 2.0 }));
+        pool.push("w", "loc", Cell::Geometry(Geometry::Point { lon: 10.0, lat: 20.0 }));
+        pool.push("w", "loc", Cell::Geometry(Geometry::Point { lon: 100.0, lat: 60.0 }));
+
+        let r: Resolved<(f64, f64)> = Resolved::Ref {
+            table: "w".into(),
+            column: "loc".into(),
+            distribution: Distribution::Uniform,
+            cast: cast_point,
+        };
+        let mut rng = SeedRng::from_seed(99);
+        // forced_parent points at this Ref's (table, column) — must use index 2.
+        let ctx = RowCtx { row: 0, pool: &pool, forced_parent: Some(("w", "loc", 2)) };
+        assert_eq!(r.resolve(&mut rng, &ctx), Some((100.0, 60.0)));
+    }
+
+    #[test]
+    fn ref_ignores_forced_parent_for_mismatched_target() {
+        let mut referenced: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        referenced.entry("w".into()).or_default().insert("loc".into());
+        let mut pool = GeneratedPool::with_plan(referenced);
+        pool.push("w", "loc", Cell::Geometry(Geometry::Point { lon: 1.0, lat: 2.0 }));
+
+        let r: Resolved<(f64, f64)> = Resolved::Ref {
+            table: "w".into(),
+            column: "loc".into(),
+            distribution: Distribution::Uniform,
+            cast: cast_point,
+        };
+        let mut rng = SeedRng::from_seed(1);
+        // forced_parent targets a DIFFERENT (table, column) — Resolved::Ref must
+        // ignore it and draw via the distribution.
+        let ctx = RowCtx { row: 0, pool: &pool, forced_parent: Some(("other", "col", 999)) };
+        // With one element, the draw must succeed and return the only point.
+        assert_eq!(r.resolve(&mut rng, &ctx), Some((1.0, 2.0)));
     }
 
     #[test]

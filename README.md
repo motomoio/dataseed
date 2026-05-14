@@ -253,8 +253,14 @@ table sensors {
 }
 ```
 
-Each `sensors` row picks a random warehouse (uniform), then samples a
-point within `radius_m` of that warehouse's location. See
+Each `sensors` row picks a random warehouse (uniform by default; or via
+the `distribution:` kwarg), then samples a point within `radius_m` of
+that warehouse's location.
+
+If a child table uses `per_parent` to assign children to a specific
+parent AND also has a `randomPointNear` with `center: ref(parent.col)`,
+the engine couples them — children of warehouse N have their locations
+sampled near warehouse N's location. See
 `examples/warehouses.dataseed`.
 
 Currently only `randomPointNear.center` accepts a ref; the other
