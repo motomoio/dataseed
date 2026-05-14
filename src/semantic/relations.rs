@@ -115,9 +115,7 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
                         col: only.col,
                         table: table.name.clone(),
                         column: only.parent_column.clone(),
-                        reason: format!(
-                            "self-references cannot use `per_parent` — the parent pool isn't materialised when the quota is drawn"
-                        ),
+                        reason: "self-references cannot use `per_parent` — the parent pool isn't materialised when the quota is drawn".to_string(),
                     });
                 } else {
                     if let Some(g) = file.generate.iter().find(|g| g.table == table.name) {
@@ -256,6 +254,12 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
                                 "the target column `{parent_table}.{parent_column}` itself references another column"
                             ),
                         });
+                    } else if per_parent_of(&field.call).is_some() {
+                        // Already handled in the per_parent owner pass — don't
+                        // double-classify as a legal self-ref. The owner pass
+                        // emitted IllegalSelfReference, so report.is_ok() is
+                        // already false; we just keep internal state (i.e.
+                        // self_ref_tables and referenced) consistent.
                     } else {
                         // Legal self-ref: record the table so the engine can
                         // enable two-pass generation for it, and add the
@@ -875,6 +879,34 @@ mod tests {
         assert_eq!(owner.0, "users");
         assert_eq!(owner.1, "id");
         assert_eq!(owner.2, (2, 7));
+    }
+
+    #[test]
+    fn per_parent_self_reference_rejected() {
+        // Combining per_parent with a self-reference is rejected at lint time.
+        // Without the guard, the engine would panic at "pool empty" because the
+        // parent values aren't materialised when the quota is drawn.
+        // A bare `generate employees: 1` is needed so the parser accepts the
+        // file; the semantic check is what we're exercising.
+        let src = r#"
+            output: sql
+            table employees {
+              id:         sequence
+              manager_id: ref(employees.id, per_parent: 1..3)
+            }
+            generate employees: 1
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(!report.is_ok());
+        assert!(
+            report.errors.iter().any(|e| matches!(
+                e,
+                SemanticError::IllegalSelfReference { reason, .. } if reason.contains("per_parent")
+            )),
+            "expected IllegalSelfReference with reason mentioning per_parent, got: {:?}",
+            report.errors
+        );
     }
 
     #[test]
