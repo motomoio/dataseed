@@ -617,3 +617,20 @@ fn ref_bind_rejects_non_string_distribution() {
     let err = crate::generators::bind(&call).err().expect("should reject");
     assert!(matches!(err, crate::SemanticError::TypeMismatch { .. }));
 }
+
+#[test]
+fn ref_bind_rejects_per_parent_with_distribution() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![
+            ("per_parent".into(), Value::Range { lo: 1, hi: 3 }),
+            ("distribution".into(), Value::String("zipf".into())),
+        ],
+        line: 1,
+        col: 1,
+    };
+    let err = crate::generators::bind(&call).err().expect("should reject");
+    assert!(matches!(err, crate::SemanticError::InvalidArgValue { .. }));
+}

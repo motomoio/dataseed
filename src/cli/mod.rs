@@ -292,8 +292,12 @@ fn lint(src_path: &PathBuf) -> ExitCode {
                 .topo_order
                 .iter()
                 .map(|t| {
-                    let n = file.count_for(t).unwrap_or(0);
-                    format!("{t} ({n})")
+                    if let Some((parent, _col, (lo, hi))) = report.per_parent_owners.get(t) {
+                        format!("{t} (per_parent {lo}..{hi} of {parent})")
+                    } else {
+                        let n = file.count_for(t).unwrap_or(0);
+                        format!("{t} ({n})")
+                    }
                 })
                 .collect();
             println!("  tables: {}", parts.join(", "));

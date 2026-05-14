@@ -598,6 +598,17 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
         }),
         None => super::distribution::Distribution::Uniform,
     };
+    // Reject the combination — per_parent forces the parent index, so
+    // the distribution would be silently ignored at produce-time.
+    if per_parent.is_some() && find_kwarg(call, "distribution").is_some() {
+        return Err(SemanticError::InvalidArgValue {
+            line: call.line,
+            col: call.col,
+            function: call.function.clone(),
+            arg: "distribution".into(),
+            reason: "cannot combine `per_parent` and `distribution` — per_parent forces the parent index, so the distribution would be ignored".to_string(),
+        });
+    }
     let (table, column) = match &call.positional[0] {
         Value::ColumnRef { table, column } => (table.clone(), column.clone()),
         other => {

@@ -294,6 +294,16 @@ the engine couples them — children of warehouse N have their locations
 sampled near warehouse N's location. See
 `examples/warehouses.dataseed`.
 
+This coupling applies to nested refs inside other generators (like
+`randomPointNear`'s `center`). For plain sibling refs that target the
+SAME parent table but a DIFFERENT column, the engine does NOT couple
+them — each plain `ref(parent.other_col)` draws independently per its
+own `distribution:` (uniform by default). This asymmetry is
+intentional: top-level `ref()` calls act as the "primary keys" of the
+relationship, while nested refs piggyback on the already-assigned
+parent for derived values (e.g. a location near the owning parent's
+location).
+
 Currently only `randomPointNear.center` accepts a ref; the other
 geo generators (`randomPolygon`, `randomLineString`, `randomBbox`) only
 accept literal positions. The infrastructure (`Resolved<T>`) is in place
@@ -408,10 +418,14 @@ can pick which to remove.
 
 ## Scope
 
-Phases 1, 2, 3, and 4 (in progress: `per_parent` for variable child counts) are shipped: parser + AST, semantic analysis,
+Phases 1, 2, 3, and 4 are shipped: parser + AST, semantic analysis,
 16 generators (10 scalar + 5 geospatial + `ref`), multi-table files
 with topological generation order and cycle detection, SQL / PostGIS /
-JSON output, deterministic generation, machine-readable `--json` catalog.
+JSON output, deterministic generation, machine-readable `--json`
+catalog, variable child counts (`per_parent`), distribution skew on
+refs (zipf / gauss / exponential), spatial relations via
+`randomPointNear`, self-references within a table, and DDL emission
+(`--emit-ddl`).
 
 Out of scope (planned for later phases): correlated refs
 (`order.created_at > user.signup_date`), nested JSON output, custom CRS
