@@ -53,6 +53,11 @@ pub enum Command {
         /// Repeatable.
         #[arg(long, value_name = "NAME", action = clap::ArgAction::Append)]
         table: Vec<String>,
+
+        /// Prepend CREATE TABLE statements to SQL/PostGIS output. No-op for
+        /// JSON (with a stderr warning).
+        #[arg(long = "emit-ddl")]
+        emit_ddl: bool,
     },
 
     /// List every available generator. Use `--json` for machine consumption.
@@ -70,8 +75,8 @@ pub enum Command {
 /// Entry point. Returns a process exit code.
 pub fn run(cli: Cli) -> ExitCode {
     match cli.command {
-        Command::Plant { file, seed, output, count, table } => {
-            plant(&file, seed, output, count, table)
+        Command::Plant { file, seed, output, count, table, emit_ddl } => {
+            plant(&file, seed, output, count, table, emit_ddl)
         }
         Command::Functions { json } => functions(json),
         Command::Lint { file } => lint(&file),
@@ -84,6 +89,7 @@ fn plant(
     out_path: Option<PathBuf>,
     count_args: Vec<String>,
     table_filters: Vec<String>,
+    emit_ddl: bool,
 ) -> ExitCode {
     let src = match fs::read_to_string(src_path) {
         Ok(s) => s,
@@ -130,6 +136,10 @@ fn plant(
         Some(table_filters.iter().cloned().collect())
     };
 
+    if emit_ddl && matches!(file.output, crate::ast::OutputKind::Json) {
+        eprintln!("warning: --emit-ddl is a no-op for JSON output");
+    }
+
     let plan = crate::output::RenderPlan {
         topo_order: report.topo_order.clone(),
         referenced: report.referenced.clone(),
@@ -137,6 +147,7 @@ fn plant(
         emit_only,
         per_parent_owners: report.per_parent_owners.clone(),
         self_ref_tables: report.self_ref_tables.clone(),
+        emit_ddl,
     };
 
     let mut rng = match seed {

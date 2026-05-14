@@ -140,6 +140,37 @@ Three example files cover the typical shapes:
 - `examples/sensor_locations.dataseed` — point cloud, `output: sql`
 - `examples/bike_routes.dataseed` — polylines, `output: json`
 
+## Emit-DDL
+
+`dataseed plant FILE --emit-ddl` prepends `CREATE TABLE` statements to
+SQL/PostGIS output. Column types are inferred from each generator's
+catalog `returns` field:
+
+| generator return         | SQL / `output: sql` type | `output: postgis` adds            |
+|--------------------------|--------------------------|-----------------------------------|
+| `integer`                | `BIGINT`                 | same                              |
+| `number`                 | `DOUBLE PRECISION`       | same                              |
+| `string`                 | `TEXT`                   | same                              |
+| `boolean`                | `BOOLEAN`                | same                              |
+| `geometry:point`         | `TEXT` (WKT)             | `geometry(Point, 4326)`           |
+| `geometry:linestring`    | `TEXT` (WKT)             | `geometry(LineString, 4326)`      |
+| `geometry:polygon`       | `TEXT` (WKT)             | `geometry(Polygon, 4326)`         |
+
+`ref()` columns inherit the target column's type, recursively. This lets
+a `user_id: ref(users.id)` column come out as `BIGINT` automatically.
+
+`--emit-ddl` is a no-op for `output: json`; a warning is printed to
+stderr. Combine with `psql -f` for a one-shot load:
+
+```
+dataseed plant examples/shop.dataseed --seed 42 --emit-ddl -o shop.sql
+psql -d shop < shop.sql
+```
+
+The DDL is intentionally minimal — column types only, no NOT NULL, no
+PRIMARY KEY, no FOREIGN KEY. The `ref()` graph is documented in the
+INSERT order, not the schema. For richer DDL, post-process the output.
+
 ## Relations
 
 Multi-table files can reference another table's column with `ref(T.C)`.

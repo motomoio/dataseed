@@ -17,6 +17,7 @@ fn render_to_string(src: &str, seed: u64) -> String {
         emit_only: None,
         per_parent_owners: report.per_parent_owners.clone(),
         self_ref_tables: report.self_ref_tables.clone(),
+        emit_ddl: false,
     };
     let mut rng = SeedRng::from_seed(seed);
     let mut buf: Vec<u8> = Vec::new();

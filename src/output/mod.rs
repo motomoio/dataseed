@@ -50,6 +50,7 @@ pub fn render(
         emit_only: None,
         per_parent_owners: BTreeMap::new(),
         self_ref_tables: BTreeSet::new(),
+        emit_ddl: false,
     };
     render_plan(file, &plan, rng, out)
 }
@@ -78,6 +79,8 @@ pub struct RenderPlan {
     /// resolve uniformly across ALL rows (including rows generated later
     /// in the same run).
     pub self_ref_tables: BTreeSet<String>,
+    /// Prepend CREATE TABLE statements to SQL/PostGIS output. Ignored for JSON.
+    pub emit_ddl: bool,
 }
 
 pub fn render_plan(
@@ -86,6 +89,22 @@ pub fn render_plan(
     rng: &mut SeedRng,
     out: &mut dyn Write,
 ) -> Result<(), RenderError> {
+    if plan.emit_ddl {
+        match file.output {
+            OutputKind::Sql | OutputKind::Postgis => {
+                for tname in &plan.topo_order {
+                    if let Some(table) = file.table(tname) {
+                        ddl::write_create_table(out, table, file)?;
+                        writeln!(out)?; // blank line between CREATE TABLE statements
+                    }
+                }
+            }
+            OutputKind::Json => {
+                // No-op: DDL is a SQL concept. The CLI prints a stderr warning.
+            }
+        }
+    }
+
     let mut pool = GeneratedPool::with_plan(plan.referenced.clone());
     let multi_table = plan.topo_order.len() > 1;
 
