@@ -11,6 +11,7 @@ use crate::error::SemanticError;
 use crate::rng::SeedRng;
 
 pub mod spec;
+pub mod distribution;
 mod geo;
 mod impls;
 
