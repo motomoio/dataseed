@@ -10,6 +10,7 @@ use crate::generators::{Cell, Generator};
 use crate::geometry::to_geojson;
 use crate::rng::SeedRng;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_json(
     table: &Table,
     gens: &mut [Box<dyn Generator>],
@@ -18,6 +19,7 @@ pub(super) fn write_json(
     out: &mut dyn Write,
     pool: &mut crate::pool::GeneratedPool,
     forced_parent_assignment: Option<(&str, &str, &[usize])>,
+    cached_target_cells: Option<&[Vec<Option<Cell>>]>,
 ) -> io::Result<()> {
     if count == 0 {
         writeln!(out, "[]")?;
@@ -27,7 +29,10 @@ pub(super) fn write_json(
     writeln!(out, "[")?;
     for row in 0..count {
         let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
-        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
+        let row_cache = cached_target_cells.map(|c| c[row as usize].as_slice());
+        let cells = super::produce_row(
+            &table.name, &table.fields, gens, rng, row, pool, forced_parent, row_cache,
+        );
         let mut obj = Map::with_capacity(table.fields.len());
         for (field, cell) in table.fields.iter().zip(cells.iter()) {
             obj.insert(field.name.clone(), cell_to_json(cell));
@@ -45,6 +50,7 @@ pub(super) fn write_json(
 /// Like `write_json` but renders the array inline (no trailing newline
 /// before `]`). Used inside the multi-table top-level object so the comma
 /// between table entries lands cleanly.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_json_inline(
     table: &Table,
     gens: &mut [Box<dyn Generator>],
@@ -53,6 +59,7 @@ pub(super) fn write_json_inline(
     out: &mut dyn Write,
     pool: &mut crate::pool::GeneratedPool,
     forced_parent_assignment: Option<(&str, &str, &[usize])>,
+    cached_target_cells: Option<&[Vec<Option<Cell>>]>,
 ) -> io::Result<()> {
     if count == 0 {
         write!(out, "[]")?;
@@ -61,7 +68,10 @@ pub(super) fn write_json_inline(
     writeln!(out, "[")?;
     for row in 0..count {
         let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
-        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
+        let row_cache = cached_target_cells.map(|c| c[row as usize].as_slice());
+        let cells = super::produce_row(
+            &table.name, &table.fields, gens, rng, row, pool, forced_parent, row_cache,
+        );
         let mut obj = Map::with_capacity(table.fields.len());
         for (field, cell) in table.fields.iter().zip(cells.iter()) {
             obj.insert(field.name.clone(), cell_to_json(cell));

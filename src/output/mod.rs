@@ -48,6 +48,7 @@ pub fn render(
         },
         emit_only: None,
         per_parent_owners: BTreeMap::new(),
+        self_ref_tables: BTreeSet::new(),
     };
     render_plan(file, &plan, rng, out)
 }
@@ -70,6 +71,12 @@ pub struct RenderPlan {
     /// Populated by the semantic checker; consumed here to drive per-parent
     /// quotas for child-row counts.
     pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
+    /// Names of tables that have at least one legal self-reference. The
+    /// engine pre-computes target column values into the pool BEFORE
+    /// generating the dependent rows, so per-row refs to the same table
+    /// resolve uniformly across ALL rows (including rows generated later
+    /// in the same run).
+    pub self_ref_tables: BTreeSet<String>,
 }
 
 pub fn render_plan(
@@ -107,6 +114,36 @@ pub fn render_plan(
         for field in &table.fields {
             gens.push(generators::bind(&field.call)?);
         }
+
+        // Self-reference pre-pass (Phase 4.2): for any table in
+        // `plan.self_ref_tables`, pre-compute every row's value for the
+        // columns that are referenced by another field IN THE SAME table,
+        // and push those values into the pool BEFORE running the row-emit
+        // loop. The row-emit loop then reuses the cached cell for the
+        // target field (so RNG order is preserved) and lets the self-ref
+        // field find a fully-populated pool when it draws.
+        //
+        // Determinism contract: RNG draws for cached target fields happen
+        // ONCE (here), in field-declaration order, for all rows. The row
+        // emission loop skips re-generating those target fields and uses
+        // the cached value. Non-target fields (including the self-refs
+        // themselves) still consume RNG once per row in the emission loop.
+        let self_ref_active = plan.self_ref_tables.contains(table_name);
+        let target_field_indices: BTreeSet<usize> = if self_ref_active {
+            let mut targets = BTreeSet::new();
+            for (i, field) in table.fields.iter().enumerate() {
+                let referenced_by_other =
+                    table.fields.iter().enumerate().any(|(j, other)| {
+                        j != i && call_refs_self_column(&other.call, table_name, &field.name)
+                    });
+                if referenced_by_other {
+                    targets.insert(i);
+                }
+            }
+            targets
+        } else {
+            BTreeSet::new()
+        };
 
         // Compute per_parent quota assignment if this table is owned.
         // For each parent row, draw a quota k ∈ [lo, hi] inclusive, then
@@ -155,6 +192,30 @@ pub fn render_plan(
             .as_ref()
             .map(|(t, c, v)| (t.as_str(), c.as_str(), v.as_slice()));
 
+        // Pre-pass: generate the target fields for every row and push them
+        // into the pool. Cache the resulting cells by [row][field] so the
+        // row-emit loop can reuse them without re-draining the RNG.
+        let cached_cells: Vec<Vec<Option<Cell>>> =
+            if self_ref_active && !target_field_indices.is_empty() {
+                let mut cache: Vec<Vec<Option<Cell>>> =
+                    vec![vec![None; table.fields.len()]; count as usize];
+                for r in 0..count {
+                    for &i in &target_field_indices {
+                        let ctx = RowCtx { row: r, pool: &pool, forced_parent: None };
+                        let cell = gens[i].produce(rng, &ctx);
+                        if pool.is_referenced(&table.name, &table.fields[i].name) {
+                            pool.push(&table.name, &table.fields[i].name, cell.clone());
+                        }
+                        cache[r as usize][i] = Some(cell);
+                    }
+                }
+                cache
+            } else {
+                Vec::new()
+            };
+        let cached_cells_slice: Option<&[Vec<Option<Cell>>]> =
+            if cached_cells.is_empty() { None } else { Some(cached_cells.as_slice()) };
+
         if emit {
             match file.output {
                 OutputKind::Sql | OutputKind::Postgis => {
@@ -169,21 +230,21 @@ pub fn render_plan(
                         }
                         writeln!(out, "-- Table: {} ({} rows)", table.name, count)?;
                     }
-                    sql::write_sql(table, &mut gens, count, rng, out, dialect, &mut pool, forced)?;
+                    sql::write_sql(table, &mut gens, count, rng, out, dialect, &mut pool, forced, cached_cells_slice)?;
                 }
                 OutputKind::Json => {
                     if multi_table {
                         let is_last = emitted_count + 1 == emitted.len();
                         write!(out, "  {}: ", serde_json::to_string(&table.name)
                             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?)?;
-                        json::write_json_inline(table, &mut gens, count, rng, out, &mut pool, forced)?;
+                        json::write_json_inline(table, &mut gens, count, rng, out, &mut pool, forced, cached_cells_slice)?;
                         if !is_last {
                             writeln!(out, ",")?;
                         } else {
                             writeln!(out)?;
                         }
                     } else {
-                        json::write_json(table, &mut gens, count, rng, out, &mut pool, forced)?;
+                        json::write_json(table, &mut gens, count, rng, out, &mut pool, forced, cached_cells_slice)?;
                     }
                 }
             }
@@ -191,7 +252,7 @@ pub fn render_plan(
         } else {
             // Generate-but-don't-emit — still drive the row loop so refs
             // resolve. The pool gets populated as a side effect.
-            drain_into_pool(table, &mut gens, count, rng, &mut pool, forced);
+            drain_into_pool(table, &mut gens, count, rng, &mut pool, forced, cached_cells_slice);
         }
     }
 
@@ -219,12 +280,23 @@ fn drain_into_pool(
     rng: &mut SeedRng,
     pool: &mut GeneratedPool,
     forced_parent_assignment: Option<(&str, &str, &[usize])>,
+    cached_target_cells: Option<&[Vec<Option<Cell>>]>,
 ) {
     for row in 0..count {
         let forced_parent =
             forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
+        let row_cache = cached_target_cells.map(|c| c[row as usize].as_slice());
         // Discard the cells — we only care about the side effects on `pool`.
-        let _ = produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
+        let _ = produce_row(
+            &table.name,
+            &table.fields,
+            gens,
+            rng,
+            row,
+            pool,
+            forced_parent,
+            row_cache,
+        );
     }
 }
 
@@ -255,6 +327,12 @@ impl From<io::Error> for RenderError {
 /// the pool so subsequent tables can `ref()` them. The two-pass shape (read
 /// then update) is what lets generators take `&GeneratedPool` while the
 /// engine holds the `&mut` outside.
+///
+/// `cached_target_cells` — when self-ref two-pass is active for this
+/// table, each entry is either `Some(cell)` for a pre-computed target
+/// field (reuse the cached value, don't re-draw the RNG) or `None` for a
+/// field that should be generated normally. Caller passes `None` for
+/// non-self-ref tables, which preserves the original per-row shape.
 pub(crate) fn produce_row(
     table_name: &str,
     fields: &[crate::ast::FieldDef],
@@ -263,16 +341,47 @@ pub(crate) fn produce_row(
     row: u64,
     pool: &mut GeneratedPool,
     forced_parent: Option<(&str, &str, usize)>,
+    cached_target_cells: Option<&[Option<Cell>]>,
 ) -> Vec<Cell> {
     let ctx = RowCtx { row, pool: &*pool, forced_parent };
     let cells: Vec<Cell> = gens
         .iter_mut()
-        .map(|g| g.produce(rng, &ctx))
+        .enumerate()
+        .map(|(i, g)| {
+            if let Some(cache) = cached_target_cells {
+                if let Some(c) = &cache[i] {
+                    return c.clone();
+                }
+            }
+            g.produce(rng, &ctx)
+        })
         .collect();
-    for (field, cell) in fields.iter().zip(cells.iter()) {
-        if pool.is_referenced(table_name, &field.name) {
+    for (i, (field, cell)) in fields.iter().zip(cells.iter()).enumerate() {
+        // Cached cells were already pushed in the pre-pass — don't
+        // double-push or the pool will hold duplicates.
+        let from_cache = cached_target_cells.map_or(false, |c| c[i].is_some());
+        if !from_cache && pool.is_referenced(table_name, &field.name) {
             pool.push(table_name, &field.name, cell.clone());
         }
     }
     cells
+}
+
+/// `true` iff `call` contains a `Value::ColumnRef { table, column }` with
+/// the given table and column anywhere (positional, kwargs, nested arrays).
+/// Used to find self-ref TARGET fields when computing the pre-pass set.
+fn call_refs_self_column(
+    call: &crate::ast::Call,
+    table: &str,
+    column: &str,
+) -> bool {
+    fn walk(v: &crate::ast::Value, t: &str, c: &str) -> bool {
+        match v {
+            crate::ast::Value::ColumnRef { table, column } => table == t && column == c,
+            crate::ast::Value::Array(items) => items.iter().any(|it| walk(it, t, c)),
+            _ => false,
+        }
+    }
+    call.positional.iter().any(|v| walk(v, table, column))
+        || call.kwargs.iter().any(|(_, v)| walk(v, table, column))
 }

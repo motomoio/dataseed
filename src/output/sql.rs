@@ -50,6 +50,7 @@ pub(super) fn write_sql(
     dialect: Dialect,
     pool: &mut crate::pool::GeneratedPool,
     forced_parent_assignment: Option<(&str, &str, &[usize])>,
+    cached_target_cells: Option<&[Vec<Option<Cell>>]>,
 ) -> io::Result<()> {
     if count == 0 {
         // Still emit a comment so the file isn't empty — helps diff tooling.
@@ -67,7 +68,10 @@ pub(super) fn write_sql(
 
         for r in row..batch_end {
             let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[r as usize]));
-            let cells = super::produce_row(&table.name, &table.fields, gens, rng, r, pool, forced_parent);
+            let row_cache = cached_target_cells.map(|c| c[r as usize].as_slice());
+            let cells = super::produce_row(
+                &table.name, &table.fields, gens, rng, r, pool, forced_parent, row_cache,
+            );
             let suffix = if r + 1 == batch_end { ";" } else { "," };
             write!(out, "  (")?;
             for (i, cell) in cells.iter().enumerate() {

@@ -1,0 +1,19 @@
+# Threaded discussion: each comment optionally references another comment
+# as its parent (creating a tree). The self-ref draws uniformly across
+# ALL comment ids — including ones generated later in the same run.
+#
+# In production you'd typically want comments to reference only earlier
+# ones (so the thread is acyclic). For test data, uniform-from-all is
+# usually fine: SELECT WHERE parent_id IS NOT NULL gives you a useful
+# join even if the graph contains a few cycles.
+
+output: sql
+
+table comments {
+  id:        sequence
+  parent_id: ref(comments.id)
+  body:      randomWord()
+  posted_at: randomDate("2024-01-01", "2024-12-31")
+}
+
+generate comments: 1000

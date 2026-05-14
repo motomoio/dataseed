@@ -92,6 +92,10 @@ const BLOG_SHA: &str = "881703fba4457302d84338829f41fc816927d575f0513f351f9abee3
 // `randomPointNear(center: ref(...))`, so this SHA pins the byte stream
 // produced by the new per-row resolve path.
 const WAREHOUSES_SHA: &str = "4e19870c56317270c86d62e7fcaf877b97c95eda1d8c464d243da899356d9d3e";
+// Phase 4.2 — self-references. `comments.dataseed` exercises the
+// two-pass engine path (pre-pass populates the pool for the same-table
+// `ref(comments.id)` draw). This SHA pins that byte stream.
+const COMMENTS_SHA: &str = "58f92a3eab8303aeda658a6af535d20cd56cb9728dd1c3b6fcfc85eb41208c2d";
 
 fn sha256(bytes: &[u8]) -> String {
     // Avoid pulling sha2 in as a runtime dep — shell out to the same tool
@@ -139,6 +143,16 @@ fn warehouses_example_matches_reference_sha() {
         sha256(&out),
         WAREHOUSES_SHA,
         "warehouses example SHA drifted — Phase 4.3 randomPointNear ref-as-arg is not byte-stable"
+    );
+}
+
+#[test]
+fn comments_example_matches_reference_sha() {
+    let out = run_plant("examples/comments.dataseed", 42, &[]);
+    assert_eq!(
+        sha256(&out),
+        COMMENTS_SHA,
+        "comments example SHA drifted — Phase 4.2 self-ref output is not byte-stable"
     );
 }
 

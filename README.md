@@ -182,7 +182,7 @@ ok: examples/fleet.dataseed
 |-------------------------------------------------------|-----------------------------|
 | `ref(missing.id)` — table doesn't exist               | `UndeclaredRefTable`        |
 | `ref(users.unknown)` — column doesn't exist in table  | `UndeclaredRefColumn`       |
-| `ref(self.something)` — Phase 3 forbids self-refs     | `SelfReference`             |
+| `ref(self.dependent_col)` — target references another column in the same row | `IllegalSelfReference`     |
 | Two tables ref each other (or 3-cycle, etc.)          | `CyclicReference` — lists every edge in the cycle |
 | Declared table has no `generate` directive            | `MissingGenerate`           |
 | `generate ghost: N` for an undeclared table           | `GenerateForUnknownTable`   |
@@ -268,6 +268,19 @@ geo generators (`randomPolygon`, `randomLineString`, `randomBbox`) only
 accept literal positions. The infrastructure (`Resolved<T>`) is in place
 to extend this — see `src/generators/resolved.rs`.
 
+### Self-references
+
+`ref(self_table.col)` is allowed when `col` is generated independently of
+other columns in the same row — e.g. `sequence`, `randomUuid`,
+`randomDate`, `randomName`. The engine pre-computes the target column
+for every row before resolving the self-refs, so a self-ref draws
+uniformly from ALL rows (including ones generated later in the same
+run). See `examples/comments.dataseed`.
+
+The restriction: the target column's call must NOT contain another
+`ref()`. Cascading dependencies are surfaced as `IllegalSelfReference`
+at lint time.
+
 ### CLI flags for multi-table files
 
 ```
@@ -339,6 +352,7 @@ the three CLI invocations below:
 | `dataseed plant examples/fleet.dataseed  --seed 42`               (Phase 3) | `2eacca59c9eee642ed3ce542e08372bd44b3534bf1b28bdfc2d3801d631255f5` |
 | `dataseed plant examples/blog.dataseed   --seed 42`               (Phase 4) | `881703fba4457302d84338829f41fc816927d575f0513f351f9abee37dc0cda1` |
 | `dataseed plant examples/warehouses.dataseed --seed 42`           (Phase 4) | `4e19870c56317270c86d62e7fcaf877b97c95eda1d8c464d243da899356d9d3e` |
+| `dataseed plant examples/comments.dataseed --seed 42`             (Phase 4) | `58f92a3eab8303aeda658a6af535d20cd56cb9728dd1c3b6fcfc85eb41208c2d` |
 
 If you build on Linux x86_64, Windows, or another target and these
 hashes don't match, that's a bug — please open an issue with your

@@ -103,21 +103,39 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
             0 => {}
             1 => {
                 let only = owners_in_this_table.into_iter().next().unwrap();
-                if let Some(g) = file.generate.iter().find(|g| g.table == table.name) {
-                    report
-                        .errors
-                        .push(SemanticError::ExplicitGenerateConflictsWithPerParent {
-                            child: table.name.clone(),
-                            parent: only.parent_table.clone(),
-                            field: only.field_name.clone(),
-                            generate_line: g.line,
-                            generate_col: g.col,
-                        });
+                // Self-owning per_parent (e.g. `ref(employees.id, per_parent: ...)`
+                // inside table `employees`) doesn't make sense — the parent
+                // pool isn't materialised when the per_parent quota would be
+                // drawn. Reject it cleanly at lint time rather than panicking
+                // in the engine. The full self-reference branch below still
+                // runs and may add its own diagnostics; that's intentional.
+                if only.parent_table == table.name {
+                    report.errors.push(SemanticError::IllegalSelfReference {
+                        line: only.line,
+                        col: only.col,
+                        table: table.name.clone(),
+                        column: only.parent_column.clone(),
+                        reason: format!(
+                            "self-references cannot use `per_parent` — the parent pool isn't materialised when the quota is drawn"
+                        ),
+                    });
+                } else {
+                    if let Some(g) = file.generate.iter().find(|g| g.table == table.name) {
+                        report
+                            .errors
+                            .push(SemanticError::ExplicitGenerateConflictsWithPerParent {
+                                child: table.name.clone(),
+                                parent: only.parent_table.clone(),
+                                field: only.field_name.clone(),
+                                generate_line: g.line,
+                                generate_col: g.col,
+                            });
+                    }
+                    report.per_parent_owners.insert(
+                        table.name.clone(),
+                        (only.parent_table, only.parent_column, only.range),
+                    );
                 }
-                report.per_parent_owners.insert(
-                    table.name.clone(),
-                    (only.parent_table, only.parent_column, only.range),
-                );
             }
             _ => {
                 let first = &owners_in_this_table[0];
@@ -240,8 +258,15 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
                         });
                     } else {
                         // Legal self-ref: record the table so the engine can
-                        // enable two-pass generation for it.
+                        // enable two-pass generation for it, and add the
+                        // target column to the materialisation plan so the
+                        // pool retains its values for the same-table draw.
                         report.self_ref_tables.insert(table_name.to_string());
+                        report
+                            .referenced
+                            .entry(parent_table.to_string())
+                            .or_default()
+                            .insert(parent_column.to_string());
                     }
                     // Intra-table edge; never contributes to the inter-table
                     // topo graph regardless of legality.
