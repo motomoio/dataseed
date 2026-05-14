@@ -6,6 +6,39 @@ Plant a seed, grow a dataset.
 realistic-looking dataset for testing — fixtures for databases, ETL
 pipelines, demo data, anywhere you'd otherwise hand-roll fake data.
 
+## Install
+
+### Pre-built binaries
+
+Download the archive for your platform from the
+[latest release](https://github.com/motomoio/dataseed/releases/latest):
+
+| OS / arch              | Archive                                                  |
+| ---------------------- | -------------------------------------------------------- |
+| macOS (Apple Silicon)  | `dataseed-vX.Y.Z-aarch64-apple-darwin.tar.gz`            |
+| macOS (Intel)          | `dataseed-vX.Y.Z-x86_64-apple-darwin.tar.gz`             |
+| Linux (x86_64, static) | `dataseed-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz`       |
+| Windows (x86_64)       | `dataseed-vX.Y.Z-x86_64-pc-windows-msvc.zip`             |
+
+Each archive is published alongside a `.sha256` checksum file. On macOS/Linux:
+
+```sh
+TAG=vX.Y.Z
+TARGET=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-musl
+ARCHIVE="dataseed-${TAG}-${TARGET}.tar.gz"
+
+curl -LO "https://github.com/motomoio/dataseed/releases/download/${TAG}/${ARCHIVE}"
+curl -LO "https://github.com/motomoio/dataseed/releases/download/${TAG}/${ARCHIVE}.sha256"
+shasum -a 256 -c "${ARCHIVE}.sha256"
+tar -xzf "${ARCHIVE}"
+"./dataseed-${TAG}-${TARGET}/dataseed" --help
+```
+
+### Build from source
+
+Requires a stable Rust toolchain. See the quickstart below — `cargo build --release`
+produces `./target/release/dataseed`.
+
 ## 30-second quickstart
 
 ```sh

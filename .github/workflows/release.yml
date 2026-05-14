@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping create."
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --generate-notes
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: create-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
+        shell: bash
+
+      - name: Package archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          name="dataseed-${TAG}-${TARGET}"
+          staging_root="$(mktemp -d)"
+          staging="${staging_root}/${name}"
+          mkdir -p "$staging"
+          cp "target/${TARGET}/release/dataseed" "$staging/"
+          cp README.md LICENSE "$staging/"
+          tar -czf "${name}.tar.gz" -C "$staging_root" "$name"
+          shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          {
+            echo "ARCHIVE=${name}.tar.gz"
+            echo "CHECKSUM=${name}.tar.gz.sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Package archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $name = "dataseed-${env:TAG}-${env:TARGET}"
+          $staging = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item "target/${env:TARGET}/release/dataseed.exe" -Destination $staging
+          Copy-Item README.md, LICENSE -Destination $staging
+          Compress-Archive -Path $staging -DestinationPath "$name.zip" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "$name.zip").Hash.ToLower()
+          Set-Content -Path "$name.zip.sha256" -Value "$hash  $name.zip" -Encoding ascii
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE=$name.zip"
+          Add-Content -Path $env:GITHUB_ENV -Value "CHECKSUM=$name.zip.sha256"
+
+      - name: Upload archive to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" "$ARCHIVE" "$CHECKSUM" \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
