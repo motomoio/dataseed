@@ -191,9 +191,9 @@ struct Sequence {
 }
 
 impl Generator for Sequence {
-    fn produce(&mut self, _rng: &mut SeedRng, row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, _rng: &mut SeedRng, ctx: &crate::output::RowCtx) -> Cell {
         // Use checked_add to avoid silent wrap on absurdly large generates.
-        let value = (self.start as i128) + (row as i128);
+        let value = (self.start as i128) + (ctx.row as i128);
         Cell::Integer(value.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
     }
 }
@@ -231,7 +231,7 @@ struct RandomInt {
 }
 
 impl Generator for RandomInt {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         Cell::Integer(rng.gen_range_i64(self.min, self.max))
     }
 }
@@ -283,7 +283,7 @@ struct RandomReal {
 }
 
 impl Generator for RandomReal {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let raw = rng.gen_range_f64(self.min, self.max);
         let factor = 10f64.powi(self.decimals as i32);
         // round-half-to-even would be more correct, but standard `round` is
@@ -319,7 +319,7 @@ struct RandomBool {
 }
 
 impl Generator for RandomBool {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         Cell::Bool(rng.gen_bool(self.weight))
     }
 }
@@ -388,7 +388,7 @@ struct RandomChoice {
 }
 
 impl Generator for RandomChoice {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let idx = rng.pick_index(self.choices.len());
         self.choices[idx].clone()
     }
@@ -405,7 +405,7 @@ pub fn bind_random_word(call: &Call) -> Result<Box<dyn Generator>, SemanticError
 struct RandomWord;
 
 impl Generator for RandomWord {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let idx = rng.pick_index(WORDS.len());
         Cell::Text(WORDS[idx].to_string())
     }
@@ -422,7 +422,7 @@ pub fn bind_random_name(call: &Call) -> Result<Box<dyn Generator>, SemanticError
 struct RandomName;
 
 impl Generator for RandomName {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let first = FIRST_NAMES[rng.pick_index(FIRST_NAMES.len())];
         let last = LAST_NAMES[rng.pick_index(LAST_NAMES.len())];
         Cell::Text(format!("{first} {last}"))
@@ -440,7 +440,7 @@ pub fn bind_random_email(call: &Call) -> Result<Box<dyn Generator>, SemanticErro
 struct RandomEmail;
 
 impl Generator for RandomEmail {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let first = FIRST_NAMES[rng.pick_index(FIRST_NAMES.len())].to_lowercase();
         let last = LAST_NAMES[rng.pick_index(LAST_NAMES.len())].to_lowercase();
         // Strip apostrophes — `o'brien` is fine but `o\'brien` in SQL gets
@@ -497,7 +497,7 @@ struct RandomDate {
 }
 
 impl Generator for RandomDate {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let offset = if self.span_days == 0 {
             0
         } else {
@@ -519,7 +519,7 @@ pub fn bind_random_uuid(call: &Call) -> Result<Box<dyn Generator>, SemanticError
 struct RandomUuidGen;
 
 impl Generator for RandomUuidGen {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         // Build 16 bytes from the seeded RNG so the UUID is reproducible.
         // `uuid::Builder::from_random_bytes` clears version/variant bits and
         // sets them to RFC4122 v4 for us.
@@ -602,11 +602,11 @@ struct RefGen {
 }
 
 impl Generator for RefGen {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, ctx: &crate::output::RowCtx) -> Cell {
         // Semantic checker has already verified the (table, column) exists.
         // If we reach here with no values, it's an engine-ordering bug: a
         // table was generated before its dependency.
-        let values = pool.get(&self.table, &self.column).unwrap_or_else(|| {
+        let values = ctx.pool.get(&self.table, &self.column).unwrap_or_else(|| {
             panic!(
                 "ref({}.{}): pool empty — engine generated this table before its dependency",
                 self.table, self.column
@@ -622,7 +622,12 @@ impl Generator for RefGen {
                 self.table, self.column
             );
         }
-        let idx = rng.pick_index(values.len());
+        let idx = match ctx.forced_parent {
+            Some((pt, pc, parent_idx)) if pt == self.table && pc == self.column => {
+                parent_idx % values.len()
+            }
+            _ => rng.pick_index(values.len()),
+        };
         values[idx].clone()
     }
 }

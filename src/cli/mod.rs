@@ -135,6 +135,7 @@ fn plant(
         referenced: report.referenced.clone(),
         counts,
         emit_only,
+        per_parent_owners: report.per_parent_owners.clone(),
     };
 
     let mut rng = match seed {

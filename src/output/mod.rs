@@ -13,6 +13,19 @@ use crate::SemanticError;
 mod json;
 mod sql;
 
+/// Per-row engine context handed to every generator's `produce`. Bundles
+/// everything a generator might read at run-time:
+/// * `row` — the 0-based row index within the current table.
+/// * `pool` — the materialized parent-table column store for `ref()` lookups.
+/// * `forced_parent` — when present, instructs a matching `ref()` call to use
+///   this parent index instead of drawing uniformly. Used by per_parent
+///   quota assignment (Task 1.4) and will be reused by future features.
+pub struct RowCtx<'a> {
+    pub row: u64,
+    pub pool: &'a crate::pool::GeneratedPool,
+    pub forced_parent: Option<(&'a str, &'a str, usize)>,
+}
+
 /// Single-table compatibility shim. Phase 1/2 callers (and tests) use this
 /// shape; multi-table callers use [`render_plan`] instead.
 pub fn render(
@@ -34,6 +47,7 @@ pub fn render(
             m
         },
         emit_only: None,
+        per_parent_owners: BTreeMap::new(),
     };
     render_plan(file, &plan, rng, out)
 }
@@ -52,6 +66,10 @@ pub struct RenderPlan {
     /// still generated and pooled (so refs resolve) but their rows aren't
     /// emitted. Use case: `dataseed plant ... --table orders`.
     pub emit_only: Option<BTreeSet<String>>,
+    /// child table → (parent table, parent column, (lo, hi)).
+    /// Populated by the semantic checker; consumed here to drive per-parent
+    /// quotas for child-row counts.
+    pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
 }
 
 pub fn render_plan(
@@ -82,7 +100,6 @@ pub fn render_plan(
         let table = file
             .table(table_name)
             .expect("plan references undeclared table");
-        let count = plan.counts.get(table_name).copied().unwrap_or(0);
         let emit = should_emit(plan, table_name);
 
         // Bind once per table.
@@ -90,6 +107,45 @@ pub fn render_plan(
         for field in &table.fields {
             gens.push(generators::bind(&field.call)?);
         }
+
+        // Compute per_parent quota assignment if this table is owned.
+        // For each parent row, draw a quota k ∈ [lo, hi] inclusive, then
+        // build a flat parent-index vector of length = sum(quotas) where
+        // each entry is the parent row index for the child at that row.
+        let owned = plan.per_parent_owners.get(table_name).cloned();
+        let per_parent_assignment: Option<(String, String, Vec<usize>)> =
+            owned.as_ref().map(|(parent, parent_col, (lo, hi))| {
+                let parent_values = pool
+                    .get(parent, parent_col)
+                    .expect("parent values present in topo order");
+                let parent_count = parent_values.len();
+                let mut quotas: Vec<u64> = Vec::with_capacity(parent_count);
+                for _ in 0..parent_count {
+                    let k = if lo == hi {
+                        *lo
+                    } else {
+                        rng.gen_range_i64(*lo as i64, *hi as i64) as u64
+                    };
+                    quotas.push(k);
+                }
+                let total: u64 = quotas.iter().sum();
+                let mut v: Vec<usize> = Vec::with_capacity(total as usize);
+                for (pi, &k) in quotas.iter().enumerate() {
+                    for _ in 0..k {
+                        v.push(pi);
+                    }
+                }
+                (parent.clone(), parent_col.clone(), v)
+            });
+
+        let count: u64 = per_parent_assignment
+            .as_ref()
+            .map(|(_, _, v)| v.len() as u64)
+            .unwrap_or_else(|| plan.counts.get(table_name).copied().unwrap_or(0));
+
+        let forced = per_parent_assignment
+            .as_ref()
+            .map(|(t, c, v)| (t.as_str(), c.as_str(), v.as_slice()));
 
         if emit {
             match file.output {
@@ -105,21 +161,21 @@ pub fn render_plan(
                         }
                         writeln!(out, "-- Table: {} ({} rows)", table.name, count)?;
                     }
-                    sql::write_sql(table, &mut gens, count, rng, out, dialect, &mut pool)?;
+                    sql::write_sql(table, &mut gens, count, rng, out, dialect, &mut pool, forced)?;
                 }
                 OutputKind::Json => {
                     if multi_table {
                         let is_last = emitted_count + 1 == emitted.len();
                         write!(out, "  {}: ", serde_json::to_string(&table.name)
                             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?)?;
-                        json::write_json_inline(table, &mut gens, count, rng, out, &mut pool)?;
+                        json::write_json_inline(table, &mut gens, count, rng, out, &mut pool, forced)?;
                         if !is_last {
                             writeln!(out, ",")?;
                         } else {
                             writeln!(out)?;
                         }
                     } else {
-                        json::write_json(table, &mut gens, count, rng, out, &mut pool)?;
+                        json::write_json(table, &mut gens, count, rng, out, &mut pool, forced)?;
                     }
                 }
             }
@@ -127,7 +183,7 @@ pub fn render_plan(
         } else {
             // Generate-but-don't-emit — still drive the row loop so refs
             // resolve. The pool gets populated as a side effect.
-            drain_into_pool(table, &mut gens, count, rng, &mut pool);
+            drain_into_pool_with_forced(table, &mut gens, count, rng, &mut pool, forced);
         }
     }
 
@@ -146,17 +202,21 @@ fn should_emit(plan: &RenderPlan, table: &str) -> bool {
 
 /// Run `count` rows worth of generation purely for pool side effects.
 /// Used when `--table NAME` filters out a dependency's emission but we
-/// still need its values materialised.
-fn drain_into_pool(
+/// still need its values materialised. Honours a per-parent assignment if
+/// the filtered-out table is per_parent-owned.
+fn drain_into_pool_with_forced(
     table: &crate::ast::Table,
     gens: &mut [Box<dyn Generator>],
     count: u64,
     rng: &mut SeedRng,
     pool: &mut GeneratedPool,
+    forced_parent_assignment: Option<(&str, &str, &[usize])>,
 ) {
     for row in 0..count {
+        let forced_parent =
+            forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
         // Discard the cells — we only care about the side effects on `pool`.
-        let _ = produce_row(&table.name, &table.fields, gens, rng, row, pool);
+        let _ = produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
     }
 }
 
@@ -194,10 +254,12 @@ pub(crate) fn produce_row(
     rng: &mut SeedRng,
     row: u64,
     pool: &mut GeneratedPool,
+    forced_parent: Option<(&str, &str, usize)>,
 ) -> Vec<Cell> {
+    let ctx = RowCtx { row, pool: &*pool, forced_parent };
     let cells: Vec<Cell> = gens
         .iter_mut()
-        .map(|g| g.produce(rng, row, &*pool))
+        .map(|g| g.produce(rng, &ctx))
         .collect();
     for (field, cell) in fields.iter().zip(cells.iter()) {
         if pool.is_referenced(table_name, &field.name) {

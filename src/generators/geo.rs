@@ -220,7 +220,7 @@ struct RandomPoint {
 }
 
 impl Generator for RandomPoint {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let lon = rng.gen_range_f64(self.bbox.min_lon, self.bbox.max_lon);
         let lat = rng.gen_range_f64(self.bbox.min_lat, self.bbox.max_lat);
         Cell::Geometry(Geometry::Point { lon, lat })
@@ -302,7 +302,7 @@ struct RandomPointNear {
 }
 
 impl Generator for RandomPointNear {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         // Uniform-by-area sampling in a unit disk: r = sqrt(U), θ = 2πV.
         // We avoid trig entirely by rejection-sampling in [-1, 1]² and
         // accepting points inside the unit circle — also deterministic and
@@ -385,7 +385,7 @@ struct RandomLineString {
 }
 
 impl Generator for RandomLineString {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         // Start somewhere in the bbox.
         let mut x = rng.gen_range_f64(self.bbox.min_lon, self.bbox.max_lon);
         let mut y = rng.gen_range_f64(self.bbox.min_lat, self.bbox.max_lat);
@@ -498,7 +498,7 @@ struct RandomPolygon {
 }
 
 impl Generator for RandomPolygon {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         // Pick a random centroid inside the bbox.
         let cx = rng.gen_range_f64(self.bbox.min_lon, self.bbox.max_lon);
         let cy = rng.gen_range_f64(self.bbox.min_lat, self.bbox.max_lat);
@@ -670,7 +670,7 @@ struct RandomBboxGen {
 }
 
 impl Generator for RandomBboxGen {
-    fn produce(&mut self, rng: &mut SeedRng, _row: u64, _pool: &crate::pool::GeneratedPool) -> Cell {
+    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
         let w = rng.gen_range_f64(self.min_size, self.max_size);
         let h = rng.gen_range_f64(self.min_size, self.max_size);
         let min_lon = rng.gen_range_f64(self.within.min_lon, self.within.max_lon - w);

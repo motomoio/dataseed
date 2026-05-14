@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 
 use crate::ast::{Call, Value};
 use crate::generators::{bind, spec, Cell};
+use crate::output::RowCtx;
 use crate::pool::GeneratedPool;
 use crate::rng::SeedRng;
 
@@ -13,6 +14,13 @@ use crate::rng::SeedRng;
 /// every test can borrow a single static instance instead of constructing
 /// a fresh one per call.
 static POOL: LazyLock<GeneratedPool> = LazyLock::new(GeneratedPool::default);
+
+/// Build a fresh `RowCtx` for a given row index with no forced parent and
+/// borrowing the shared empty pool. Centralises the ctx construction so
+/// tests stay terse after the trait signature change.
+fn ctx(row: u64) -> RowCtx<'static> {
+    RowCtx { row, pool: &POOL, forced_parent: None }
+}
 
 fn mk_call(name: &str, positional: Vec<Value>, kwargs: Vec<(String, Value)>) -> Call {
     Call { function: name.to_string(), positional, kwargs, line: 1, col: 1 }
@@ -44,9 +52,9 @@ fn spec_and_dispatch_cover_same_names() {
 fn sequence_starts_at_one_by_default() {
     let mut g = bind(&mk_call("sequence", vec![], vec![])).unwrap();
     let mut rng = SeedRng::from_seed(0);
-    assert_eq!(g.produce(&mut rng, 0, &POOL), Cell::Integer(1));
-    assert_eq!(g.produce(&mut rng, 1, &POOL), Cell::Integer(2));
-    assert_eq!(g.produce(&mut rng, 9, &POOL), Cell::Integer(10));
+    assert_eq!(g.produce(&mut rng, &ctx(0)), Cell::Integer(1));
+    assert_eq!(g.produce(&mut rng, &ctx(1)), Cell::Integer(2));
+    assert_eq!(g.produce(&mut rng, &ctx(9)), Cell::Integer(10));
 }
 
 #[test]
@@ -54,7 +62,7 @@ fn sequence_honors_start_kwarg() {
     let call = mk_call("sequence", vec![], vec![("start".into(), Value::Number(1000.0))]);
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(0);
-    assert_eq!(g.produce(&mut rng, 0, &POOL), Cell::Integer(1000));
+    assert_eq!(g.produce(&mut rng, &ctx(0)), Cell::Integer(1000));
 }
 
 #[test]
@@ -67,7 +75,7 @@ fn random_int_respects_bounds() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(42);
     for row in 0..200 {
-        let cell = g.produce(&mut rng, row, &POOL);
+        let cell = g.produce(&mut rng, &ctx(row));
         match cell {
             Cell::Integer(n) => assert!((1..=10).contains(&n), "out of bounds: {n}"),
             other => panic!("expected Integer, got {other:?}"),
@@ -110,7 +118,7 @@ fn random_real_rounds_to_decimals() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(1);
     for _ in 0..50 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Real(n) => {
                 let scaled = n * 1000.0;
                 assert!((scaled - scaled.round()).abs() < 1e-6, "not rounded to 3dp: {n}");
@@ -130,7 +138,7 @@ fn random_bool_weight_zero_always_false() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(7);
     for _ in 0..100 {
-        assert_eq!(g.produce(&mut rng, 0, &POOL), Cell::Bool(false));
+        assert_eq!(g.produce(&mut rng, &ctx(0)), Cell::Bool(false));
     }
 }
 
@@ -144,7 +152,7 @@ fn random_bool_weight_one_always_true() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(7);
     for _ in 0..100 {
-        assert_eq!(g.produce(&mut rng, 0, &POOL), Cell::Bool(true));
+        assert_eq!(g.produce(&mut rng, &ctx(0)), Cell::Bool(true));
     }
 }
 
@@ -168,7 +176,7 @@ fn random_choice_returns_one_of_the_choices() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(99);
     for _ in 0..50 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Text(s) => assert!(matches!(s.as_str(), "oak" | "birch" | "pine")),
             other => panic!("expected Text, got {other:?}"),
         }
@@ -188,7 +196,7 @@ fn random_date_within_range() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(3);
     for _ in 0..50 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Text(s) => {
                 assert!(s.starts_with("2020-"), "out of range: {s}");
                 assert_eq!(s.len(), 10);
@@ -231,7 +239,7 @@ fn random_uuid_emits_valid_v4() {
     let mut g = bind(&mk_call("randomUuid", vec![], vec![])).unwrap();
     let mut rng = SeedRng::from_seed(0);
     for _ in 0..20 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Text(s) => {
                 let parsed = uuid::Uuid::parse_str(&s).expect("valid uuid string");
                 assert_eq!(parsed.get_version_num(), 4, "must be v4");
@@ -252,7 +260,7 @@ fn array(xs: &[f64]) -> Value {
 fn produce_geom(call: Call, seed: u64) -> Geometry {
     let mut g = bind(&call).expect("bind ok");
     let mut rng = SeedRng::from_seed(seed);
-    match g.produce(&mut rng, 0, &POOL) {
+    match g.produce(&mut rng, &ctx(0)) {
         Cell::Geometry(geom) => geom,
         other => panic!("expected Geometry cell, got {other:?}"),
     }
@@ -268,7 +276,7 @@ fn random_point_lies_inside_bbox() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(42);
     for _ in 0..200 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Geometry(Geometry::Point { lon, lat }) => {
                 assert!((3.3..=7.2).contains(&lon), "lon out of bbox: {lon}");
                 assert!((50.7..=53.5).contains(&lat), "lat out of bbox: {lat}");
@@ -329,7 +337,7 @@ fn random_point_near_stays_within_radius() {
     // bounding box (Chebyshev) — we sample inside a disk, so points must
     // stay inside the disk's bounding square.
     for _ in 0..100 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Geometry(Geometry::Point { lon, lat }) => {
                 let dlat = (lat - 52.37).abs();
                 let dlon = (lon - 4.9).abs();
@@ -457,7 +465,7 @@ fn random_bbox_is_rectangle_inside_within() {
     let mut g = bind(&call).unwrap();
     let mut rng = SeedRng::from_seed(2);
     for _ in 0..50 {
-        match g.produce(&mut rng, 0, &POOL) {
+        match g.produce(&mut rng, &ctx(0)) {
             Cell::Geometry(Geometry::Polygon { rings }) => {
                 let r = &rings[0];
                 assert_eq!(r.len(), 5, "rectangle = 4 unique + 1 closing");

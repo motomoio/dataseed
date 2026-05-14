@@ -46,9 +46,12 @@ impl Cell {
 /// A bound, ready-to-produce generator. One instance per schema field.
 ///
 /// Phase 3 added the `pool` parameter so `ref(table.column)` can draw from
-/// materialized parent-table values. Every other generator ignores it.
+/// materialized parent-table values. Phase 4 (Task 1.4) replaced the loose
+/// `(row, pool)` pair with a single [`crate::output::RowCtx`] struct that
+/// also carries an optional `forced_parent` hint for per_parent quota
+/// assignment. Most generators ignore everything but the RNG.
 pub trait Generator: Send {
-    fn produce(&mut self, rng: &mut SeedRng, row: u64, pool: &crate::pool::GeneratedPool) -> Cell;
+    fn produce(&mut self, rng: &mut SeedRng, ctx: &crate::output::RowCtx) -> Cell;
 }
 
 /// Resolve an AST call into a bound generator, validating signatures along

@@ -38,6 +38,9 @@ pub(super) enum Dialect {
     Postgis,
 }
 
+// The engine threads a lot of state through this function; bundling further
+// would add an indirection without making the call site clearer.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write_sql(
     table: &Table,
     gens: &mut [Box<dyn Generator>],
@@ -46,6 +49,7 @@ pub(super) fn write_sql(
     out: &mut dyn Write,
     dialect: Dialect,
     pool: &mut crate::pool::GeneratedPool,
+    forced_parent_assignment: Option<(&str, &str, &[usize])>,
 ) -> io::Result<()> {
     if count == 0 {
         // Still emit a comment so the file isn't empty — helps diff tooling.
@@ -62,7 +66,8 @@ pub(super) fn write_sql(
         writeln!(out, "INSERT INTO {} ({}) VALUES", table.name, col_list)?;
 
         for r in row..batch_end {
-            let cells = super::produce_row(&table.name, &table.fields, gens, rng, r, pool);
+            let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[r as usize]));
+            let cells = super::produce_row(&table.name, &table.fields, gens, rng, r, pool, forced_parent);
             let suffix = if r + 1 == batch_end { ";" } else { "," };
             write!(out, "  (")?;
             for (i, cell) in cells.iter().enumerate() {

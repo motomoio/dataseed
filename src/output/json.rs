@@ -17,6 +17,7 @@ pub(super) fn write_json(
     rng: &mut SeedRng,
     out: &mut dyn Write,
     pool: &mut crate::pool::GeneratedPool,
+    forced_parent_assignment: Option<(&str, &str, &[usize])>,
 ) -> io::Result<()> {
     if count == 0 {
         writeln!(out, "[]")?;
@@ -25,7 +26,8 @@ pub(super) fn write_json(
 
     writeln!(out, "[")?;
     for row in 0..count {
-        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool);
+        let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
+        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
         let mut obj = Map::with_capacity(table.fields.len());
         for (field, cell) in table.fields.iter().zip(cells.iter()) {
             obj.insert(field.name.clone(), cell_to_json(cell));
@@ -50,6 +52,7 @@ pub(super) fn write_json_inline(
     rng: &mut SeedRng,
     out: &mut dyn Write,
     pool: &mut crate::pool::GeneratedPool,
+    forced_parent_assignment: Option<(&str, &str, &[usize])>,
 ) -> io::Result<()> {
     if count == 0 {
         write!(out, "[]")?;
@@ -57,7 +60,8 @@ pub(super) fn write_json_inline(
     }
     writeln!(out, "[")?;
     for row in 0..count {
-        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool);
+        let forced_parent = forced_parent_assignment.map(|(t, c, assn)| (t, c, assn[row as usize]));
+        let cells = super::produce_row(&table.name, &table.fields, gens, rng, row, pool, forced_parent);
         let mut obj = Map::with_capacity(table.fields.len());
         for (field, cell) in table.fields.iter().zip(cells.iter()) {
             obj.insert(field.name.clone(), cell_to_json(cell));
