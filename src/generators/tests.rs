@@ -527,3 +527,44 @@ fn unknown_kwarg_lists_allowed_names() {
     assert!(msg.contains("unknown keyword argument"), "got: {msg}");
     assert!(msg.contains("weight"), "must list allowed kwargs: {msg}");
 }
+
+#[test]
+fn ref_bind_accepts_per_parent_kwarg() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("per_parent".into(), Value::Range { lo: 1, hi: 5 })],
+        line: 1,
+        col: 1,
+    };
+    assert!(crate::generators::bind(&call).is_ok());
+}
+
+#[test]
+fn ref_bind_rejects_non_range_per_parent() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("per_parent".into(), Value::Number(5.0))],
+        line: 1,
+        col: 1,
+    };
+    let err = crate::generators::bind(&call).err().expect("should reject");
+    assert!(matches!(err, crate::SemanticError::TypeMismatch { .. }));
+}
+
+#[test]
+fn ref_bind_rejects_negative_per_parent() {
+    use crate::ast::{Call, Value};
+    let call = Call {
+        function: "ref".into(),
+        positional: vec![Value::ColumnRef { table: "users".into(), column: "id".into() }],
+        kwargs: vec![("per_parent".into(), Value::Range { lo: -1, hi: 5 })],
+        line: 1,
+        col: 1,
+    };
+    let err = crate::generators::bind(&call).err().expect("should reject");
+    assert!(matches!(err, crate::SemanticError::InvalidArgValue { .. }));
+}

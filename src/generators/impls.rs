@@ -549,7 +549,32 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
             got: call.positional.len(),
         });
     }
-    require_no_kwargs_except(call, &[])?;
+    require_no_kwargs_except(call, &["per_parent"])?;
+    let per_parent = match find_kwarg(call, "per_parent") {
+        Some(Value::Range { lo, hi }) => {
+            if *lo < 0 {
+                return Err(SemanticError::InvalidArgValue {
+                    line: call.line,
+                    col: call.col,
+                    function: call.function.clone(),
+                    arg: "per_parent".into(),
+                    reason: format!("range bounds must be >= 0, got {lo}..{hi}"),
+                });
+            }
+            Some((*lo as u64, *hi as u64))
+        }
+        Some(other) => {
+            return Err(SemanticError::TypeMismatch {
+                line: call.line,
+                col: call.col,
+                function: call.function.clone(),
+                arg: "per_parent".into(),
+                expected: "range (N..M)",
+                got: other.type_name(),
+            });
+        }
+        None => None,
+    };
     let (table, column) = match &call.positional[0] {
         Value::ColumnRef { table, column } => (table.clone(), column.clone()),
         other => {
@@ -563,12 +588,17 @@ pub fn bind_ref(call: &Call) -> Result<Box<dyn Generator>, SemanticError> {
             });
         }
     };
-    Ok(Box::new(RefGen { table, column }))
+    Ok(Box::new(RefGen { table, column, per_parent }))
 }
 
 struct RefGen {
     table: String,
     column: String,
+    // per_parent is read by the engine (Task 1.4) to drive child-row quotas.
+    // RefGen itself still does its current uniform pick when no quota is
+    // active; the field is stored here so the catalog stays in sync.
+    #[allow(dead_code)]
+    per_parent: Option<(u64, u64)>,
 }
 
 impl Generator for RefGen {

@@ -73,8 +73,10 @@ fn parse_default(ty: ArgType, raw: &str) -> Value {
             "false" => Value::Bool(false),
             _ => Value::String(raw.into()),
         },
-        ArgType::String | ArgType::Any | ArgType::Array(_) | ArgType::ColumnRef => {
-            Value::String(raw.into())
-        }
+        ArgType::String
+        | ArgType::Any
+        | ArgType::Array(_)
+        | ArgType::ColumnRef
+        | ArgType::Range => Value::String(raw.into()),
     }
 }

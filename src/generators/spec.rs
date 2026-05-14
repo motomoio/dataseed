@@ -27,6 +27,9 @@ pub enum ArgType {
     /// existence check (table declared in this file, column declared in
     /// that table) happens at semantic-check time, not in the catalog.
     ColumnRef,
+    /// `N..M` integer range literal — Phase 4, used only by `ref()`'s
+    /// `per_parent` kwarg. Bounds validity is checked at bind time.
+    Range,
 }
 
 impl ArgType {
@@ -39,6 +42,7 @@ impl ArgType {
             ArgType::Boolean => "boolean",
             ArgType::Any => "any",
             ArgType::ColumnRef => "column_reference",
+            ArgType::Range => "range",
             ArgType::Array(inner) => match inner {
                 ArgType::Number => "array<number>",
                 ArgType::Integer => "array<integer>",
@@ -46,6 +50,9 @@ impl ArgType {
                 ArgType::Boolean => "array<boolean>",
                 ArgType::Any => "array<any>",
                 ArgType::ColumnRef => "array<column_reference>",
+                // Arrays of ranges aren't a real use case; map it so the
+                // outer match stays exhaustive.
+                ArgType::Range => "array<range>",
                 // Phase 2 never produces array-of-array; if Phase 3 needs it,
                 // extend this match with the specific nested literal you want.
                 ArgType::Array(_) => "array<array>",
@@ -329,14 +336,24 @@ pub static CATALOG: &[FunctionSpec] = &[
     // ---------- Phase 3: relations --------------------------------------
     FunctionSpec {
         name: "ref",
-        args: &[ArgSpec {
-            name: "target",
-            ty: ArgType::ColumnRef,
-            required: true,
-            positional: true,
-            default: None,
-            length: None,
-        }],
+        args: &[
+            ArgSpec {
+                name: "target",
+                ty: ArgType::ColumnRef,
+                required: true,
+                positional: true,
+                default: None,
+                length: None,
+            },
+            ArgSpec {
+                name: "per_parent",
+                ty: ArgType::Range,
+                required: false,
+                positional: false,
+                default: None,
+                length: None,
+            },
+        ],
         variadic: None,
         // Catalog sentinel: the actual return type depends on which column
         // is being referenced. Documented in the README.
