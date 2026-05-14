@@ -20,19 +20,33 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{Call, File, Value};
-use crate::error::{CycleEdge, SemanticError};
+use crate::error::{CycleEdge, PerParentSite, SemanticError};
 
 #[derive(Debug, Default)]
 pub(super) struct RelationsReport {
     pub errors: Vec<SemanticError>,
     pub topo_order: Vec<String>,
     pub referenced: BTreeMap<String, BTreeSet<String>>,
+    /// child table → (parent table, parent column, (lo, hi))
+    pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
+}
+
+/// One resolved per_parent ref-site inside the child table being scanned.
+/// Used only by the owner pass to decide whether a child has zero, one, or
+/// many owning parents, and to build the diagnostic if it has many.
+#[derive(Debug)]
+struct PerParentCandidate {
+    parent_table: String,
+    parent_column: String,
+    range: (u64, u64),
+    field_name: String,
+    line: usize,
+    col: usize,
 }
 
 pub(super) fn analyze(file: &File) -> RelationsReport {
     let mut report = RelationsReport::default();
 
-    // --- Table/generate parity ------------------------------------------
     let declared: BTreeMap<&str, (usize, usize)> = file
         .tables
         .iter()
@@ -40,7 +54,98 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
         .collect();
     let generated: BTreeSet<&str> = file.generate.iter().map(|g| g.table.as_str()).collect();
 
+    // --- per_parent owner pass (runs BEFORE the MissingGenerate check
+    // because owned children don't need an explicit `generate`).
+    //
+    // For each table we collect the per_parent ref-sites whose target is
+    // resolvable. Zero sites → not owned; one site → record the owner and
+    // (if needed) reject any conflicting explicit `generate`; two or more
+    // → emit MultiplePerParentOwners and don't record an owner.
+    for table in &file.tables {
+        let mut owners_in_this_table: Vec<PerParentCandidate> = Vec::new();
+
+        for field in &table.fields {
+            if field.call.function != "ref" {
+                continue;
+            }
+            let Some(range) = per_parent_of(&field.call) else {
+                continue;
+            };
+            let Some((parent_table, parent_column)) = extract_per_parent_target(&field.call)
+            else {
+                continue;
+            };
+            // Skip silently when the target is unresolved — the edge pass
+            // below will emit UndeclaredRefTable/Column for the same site.
+            let target_exists = file
+                .tables
+                .iter()
+                .find(|t| t.name == parent_table)
+                .map(|t| t.fields.iter().any(|f| f.name == parent_column))
+                .unwrap_or(false);
+            if !target_exists {
+                continue;
+            }
+
+            owners_in_this_table.push(PerParentCandidate {
+                parent_table,
+                parent_column,
+                range,
+                field_name: field.name.clone(),
+                line: field.call.line,
+                col: field.call.col,
+            });
+        }
+
+        match owners_in_this_table.len() {
+            0 => {}
+            1 => {
+                let only = owners_in_this_table.into_iter().next().unwrap();
+                if let Some(g) = file.generate.iter().find(|g| g.table == table.name) {
+                    report
+                        .errors
+                        .push(SemanticError::ExplicitGenerateConflictsWithPerParent {
+                            child: table.name.clone(),
+                            parent: only.parent_table.clone(),
+                            field: only.field_name.clone(),
+                            generate_line: g.line,
+                            generate_col: g.col,
+                        });
+                }
+                report.per_parent_owners.insert(
+                    table.name.clone(),
+                    (only.parent_table, only.parent_column, only.range),
+                );
+            }
+            _ => {
+                let first = &owners_in_this_table[0];
+                let second = &owners_in_this_table[1];
+                report.errors.push(SemanticError::MultiplePerParentOwners {
+                    child: table.name.clone(),
+                    first: PerParentSite {
+                        parent: first.parent_table.clone(),
+                        field: first.field_name.clone(),
+                        line: first.line,
+                        col: first.col,
+                    },
+                    second: PerParentSite {
+                        parent: second.parent_table.clone(),
+                        field: second.field_name.clone(),
+                        line: second.line,
+                        col: second.col,
+                    },
+                });
+            }
+        }
+    }
+
+    // --- Table/generate parity ------------------------------------------
     for t in &file.tables {
+        // per_parent-owned children derive their row count from the parent
+        // pool; they intentionally have no `generate` directive.
+        if report.per_parent_owners.contains_key(&t.name) {
+            continue;
+        }
         if !generated.contains(t.name.as_str()) {
             report.errors.push(SemanticError::MissingGenerate {
                 table: t.name.clone(),
@@ -156,6 +261,34 @@ fn extract_target(call: &Call) -> Option<(String, String)> {
         Value::ColumnRef { table, column } => Some((table.clone(), column.clone())),
         _ => None,
     }
+}
+
+/// Like `extract_target` but tolerant of kwargs — used by the per_parent
+/// owner pass, where the call shape is `ref(T.C, per_parent: lo..hi)`.
+fn extract_per_parent_target(call: &Call) -> Option<(String, String)> {
+    if call.positional.len() != 1 {
+        return None;
+    }
+    match &call.positional[0] {
+        Value::ColumnRef { table, column } => Some((table.clone(), column.clone())),
+        _ => None,
+    }
+}
+
+/// If `call` carries a `per_parent: lo..hi` kwarg with non-negative bounds,
+/// return `Some((lo, hi))`. Anything else (no kwarg, wrong type, negatives)
+/// returns `None` — the catalog pass already errored on shape problems.
+fn per_parent_of(call: &Call) -> Option<(u64, u64)> {
+    for (k, v) in &call.kwargs {
+        if k == "per_parent" {
+            if let Value::Range { lo, hi } = v {
+                if *lo >= 0 && *hi >= 0 {
+                    return Some((*lo as u64, *hi as u64));
+                }
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +595,68 @@ mod tests {
         let report = check(&file);
         assert!(report.is_ok());
         assert_eq!(report.topo_order, vec!["alpha", "mike", "zulu"]);
+    }
+
+    #[test]
+    fn per_parent_forbids_explicit_generate_for_child() {
+        let src = r#"
+            output: sql
+            table users { id: sequence }
+            table posts {
+              id: sequence
+              author_id: ref(users.id, per_parent: 0..10)
+            }
+            generate users: 100
+            generate posts: 50
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            SemanticError::ExplicitGenerateConflictsWithPerParent { child, .. } if child == "posts"
+        )));
+    }
+
+    #[test]
+    fn per_parent_two_owners_rejected() {
+        let src = r#"
+            output: sql
+            table a { id: sequence }
+            table b { id: sequence }
+            table xs {
+              id:   sequence
+              a_id: ref(a.id, per_parent: 1..3)
+              b_id: ref(b.id, per_parent: 1..3)
+            }
+            generate a: 10
+            generate b: 10
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(report.errors.iter().any(|e| matches!(
+            e,
+            SemanticError::MultiplePerParentOwners { child, .. } if child == "xs"
+        )));
+    }
+
+    #[test]
+    fn per_parent_owner_recorded_on_report() {
+        let src = r#"
+            output: sql
+            table users { id: sequence }
+            table posts {
+              id: sequence
+              author_id: ref(users.id, per_parent: 2..7)
+            }
+            generate users: 5
+        "#;
+        let file = parse_ok(src);
+        let report = check(&file);
+        assert!(report.is_ok(), "errors: {:?}", report.errors);
+        let owner = report.per_parent_owners.get("posts").expect("posts is owned");
+        assert_eq!(owner.0, "users");
+        assert_eq!(owner.1, "id");
+        assert_eq!(owner.2, (2, 7));
     }
 
     #[test]

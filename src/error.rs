@@ -217,6 +217,36 @@ pub enum SemanticError {
     CyclicReference {
         edges: Vec<CycleEdge>,
     },
+
+    /// A child table is driven by `per_parent` on some field, but the file also
+    /// contains an explicit `generate <child>: N` directive. The count must come
+    /// from one source — keep the per_parent, drop the explicit generate.
+    ExplicitGenerateConflictsWithPerParent {
+        child: String,
+        parent: String,
+        field: String,
+        generate_line: usize,
+        generate_col: usize,
+    },
+
+    /// A child table has more than one field using `per_parent`. Each child
+    /// table can only have one owning parent.
+    MultiplePerParentOwners {
+        child: String,
+        first: PerParentSite,
+        second: PerParentSite,
+    },
+}
+
+/// Locator for a single `per_parent` ref-site, used in multi-owner diagnostics
+/// so the user can see both the field name, its parent target, and where the
+/// offending call lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerParentSite {
+    pub parent: String,
+    pub field: String,
+    pub line: usize,
+    pub col: usize,
 }
 
 /// One edge in a cyclic-reference diagnostic. Carries enough information
@@ -325,6 +355,22 @@ impl fmt::Display for SemanticError {
                 }
                 write!(f, "Tables in a single file cannot have mutually recursive refs.")
             }
+            SemanticError::ExplicitGenerateConflictsWithPerParent {
+                child,
+                parent,
+                field,
+                generate_line,
+                generate_col,
+            } => write!(
+                f,
+                "Error: table `{child}` is driven by `per_parent` on `{field}` (references `{parent}`), but an explicit `generate {child}: …` directive is present at line {generate_line}, column {generate_col}\nHint: remove the explicit count — per_parent derives it from the parent."
+            ),
+            SemanticError::MultiplePerParentOwners { child, first, second } => write!(
+                f,
+                "Error: table `{child}` has two fields using `per_parent`: `{}` (refs `{}`, at line {}, col {}) and `{}` (refs `{}`, at line {}, col {})\nHint: only one field per child table may use per_parent.",
+                first.field, first.parent, first.line, first.col,
+                second.field, second.parent, second.line, second.col,
+            ),
         }
     }
 }

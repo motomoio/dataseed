@@ -33,6 +33,10 @@ pub struct SemanticReport {
     pub errors: Vec<SemanticError>,
     pub topo_order: Vec<String>,
     pub referenced: BTreeMap<String, BTreeSet<String>>,
+    /// child table → (parent table, parent column, (lo, hi)). Populated by
+    /// the relations pass when a child has exactly one `per_parent` ref —
+    /// the engine reads this to derive child row counts from parent draws.
+    pub per_parent_owners: BTreeMap<String, (String, String, (u64, u64))>,
 }
 
 impl SemanticReport {
@@ -58,6 +62,7 @@ pub fn check(file: &File) -> SemanticReport {
     report.errors.extend(rel.errors);
     report.topo_order = rel.topo_order;
     report.referenced = rel.referenced;
+    report.per_parent_owners = rel.per_parent_owners;
 
     report
 }
