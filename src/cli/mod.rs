@@ -70,6 +70,58 @@ pub enum Command {
     Lint {
         file: PathBuf,
     },
+
+    /// Connect to a Postgres database, sample rows, and emit a `.dataseed`
+    /// file inferred from the actual data. Requires the `harvest` feature
+    /// (on by default).
+    #[cfg(feature = "harvest")]
+    Harvest {
+        /// libpq connection string (`postgres://user:pass@host:port/db`).
+        connection_string: String,
+
+        /// Postgres schema to inspect.
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Comma-separated allowlist of tables to inspect.
+        #[arg(long, value_delimiter = ',')]
+        tables: Option<Vec<String>>,
+
+        /// Comma-separated denylist of tables to skip.
+        #[arg(long, value_delimiter = ',', default_value = "")]
+        exclude: Vec<String>,
+
+        /// Rows to sample per table for inference. Capped at 100_000.
+        #[arg(long, default_value_t = 1000)]
+        sample: usize,
+
+        /// Multiplier for inferred `generate N` counts (1.0 = match source row count).
+        #[arg(long, default_value_t = 1.0)]
+        scale: f64,
+
+        /// Output mode to write into the `output:` directive (`sql`, `json`, `postgis`).
+        /// Defaults to `postgis` when geometry columns are present, else `sql`.
+        #[arg(long = "output-mode", value_parser = parse_output_mode)]
+        output_mode: Option<crate::ast::OutputKind>,
+
+        /// Write to file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+
+        /// Print per-column inference reasoning to stderr.
+        #[arg(long)]
+        verbose: bool,
+    },
+}
+
+#[cfg(feature = "harvest")]
+fn parse_output_mode(s: &str) -> Result<crate::ast::OutputKind, String> {
+    match s {
+        "sql" => Ok(crate::ast::OutputKind::Sql),
+        "json" => Ok(crate::ast::OutputKind::Json),
+        "postgis" => Ok(crate::ast::OutputKind::Postgis),
+        other => Err(format!("invalid output mode `{other}`; expected sql|json|postgis")),
+    }
 }
 
 /// Entry point. Returns a process exit code.
@@ -80,6 +132,107 @@ pub fn run(cli: Cli) -> ExitCode {
         }
         Command::Functions { json } => functions(json),
         Command::Lint { file } => lint(&file),
+        #[cfg(feature = "harvest")]
+        Command::Harvest {
+            connection_string,
+            schema,
+            tables,
+            exclude,
+            sample,
+            scale,
+            output_mode,
+            output,
+            verbose,
+        } => harvest_cmd(
+            connection_string,
+            schema,
+            tables,
+            exclude,
+            sample,
+            scale,
+            output_mode,
+            output,
+            verbose,
+        ),
+    }
+}
+
+#[cfg(feature = "harvest")]
+#[allow(clippy::too_many_arguments)]
+fn harvest_cmd(
+    connection_string: String,
+    schema: String,
+    tables: Option<Vec<String>>,
+    exclude_raw: Vec<String>,
+    sample: usize,
+    scale: f64,
+    output_mode: Option<crate::ast::OutputKind>,
+    output_file: Option<PathBuf>,
+    verbose: bool,
+) -> ExitCode {
+    let exclude: std::collections::BTreeSet<String> = exclude_raw
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    let invocation_line = format!(
+        "dataseed harvest {}{}",
+        crate::harvest::run::redact_connection_string(&connection_string),
+        format_options_for_header(&schema, &tables, &exclude, sample, scale, output_mode)
+    );
+    let opts = crate::harvest::HarvestOptions {
+        connection_string,
+        schema,
+        tables,
+        exclude,
+        sample,
+        scale,
+        output_mode,
+        output_file,
+        verbose,
+        invocation_line,
+    };
+    match crate::harvest::run_harvest(opts) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(feature = "harvest")]
+fn format_options_for_header(
+    schema: &str,
+    tables: &Option<Vec<String>>,
+    exclude: &std::collections::BTreeSet<String>,
+    sample: usize,
+    scale: f64,
+    output_mode: Option<crate::ast::OutputKind>,
+) -> String {
+    let mut parts = Vec::new();
+    if schema != "public" {
+        parts.push(format!("--schema {schema}"));
+    }
+    if let Some(t) = tables {
+        parts.push(format!("--tables {}", t.join(",")));
+    }
+    if !exclude.is_empty() {
+        let joined: Vec<String> = exclude.iter().cloned().collect();
+        parts.push(format!("--exclude {}", joined.join(",")));
+    }
+    if sample != 1000 {
+        parts.push(format!("--sample {sample}"));
+    }
+    if (scale - 1.0).abs() > f64::EPSILON {
+        parts.push(format!("--scale {scale}"));
+    }
+    if let Some(m) = output_mode {
+        parts.push(format!("--output-mode {}", output_kind_label(m)));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", parts.join(" "))
     }
 }
 

@@ -3,6 +3,7 @@ pub mod cli;
 pub mod error;
 pub mod generators;
 pub mod geometry;
+pub mod harvest;
 pub mod output;
 pub mod parser;
 pub mod pool;

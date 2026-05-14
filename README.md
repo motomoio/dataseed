@@ -449,6 +449,72 @@ Hint: did you mean `randomName`?
 For duplicate top-level directives, both line numbers are reported so you
 can pick which to remove.
 
+## Harvest: inferring a `.dataseed` file from a real database
+
+Writing a `.dataseed` from scratch is tedious. `dataseed harvest` inverts
+the friction — point it at an existing Postgres database, get back a
+ready-to-edit `.dataseed` file with generators inferred from each
+column's type, declared constraints, and a sample of actual values.
+
+```sh
+# stdout, all defaults
+dataseed harvest postgres://localhost/shop
+
+# specific schema, write to file
+dataseed harvest postgres://user:pass@host/db --schema public -o shop.dataseed
+
+# pick a subset of tables, smaller fixture
+dataseed harvest "$DATABASE_URL" --tables users,orders --scale 0.1
+
+# show inference reasoning per column on stderr
+dataseed harvest "$DATABASE_URL" --verbose
+```
+
+### What it infers
+
+| Source                                            | Output                                                   |
+| ------------------------------------------------- | -------------------------------------------------------- |
+| Declared foreign key                              | `ref(parent.col)` with `# inferred from FK constraint`   |
+| Integer single-column PK / `SERIAL` / `IDENTITY`  | `sequence`                                               |
+| `<col>_id` matching a harvested table             | `ref(<col>.id)` with `# inferred from column name`       |
+| `geometry(POINT, …)`                              | `randomPoint(bbox: …)` from observed `ST_Extent`         |
+| `geometry(LINESTRING, …)`                         | `randomLineString(bbox: …, segments: …)`                 |
+| `geometry(POLYGON, …)`                            | `randomPolygon(bbox: …, vertices: …)`                    |
+| `boolean`                                         | `randomBool(weight: <observed true fraction>)`           |
+| Native `uuid` or text matching UUID v4 regex      | `randomUuid()`                                           |
+| `date` / `timestamp[tz]`                          | `randomDate(observed_min, observed_max)`                 |
+| Integer columns                                   | `randomInt(min, max)` from server-side aggregates        |
+| `numeric` / `real` / `double precision`           | `randomRealNumber(min, max, decimals)`                   |
+| Text column with ≤ 20 distinct values             | `randomChoice("v1", "v2", …)` sorted alphabetically      |
+| Text matching email pattern                       | `randomEmail()`                                          |
+| Text matching `Firstname Lastname` shape          | `randomName()`                                           |
+| Anything else                                     | `randomWord()` with a `# TODO` comment                   |
+
+Tables are emitted in topological order so `dataseed plant` can resolve
+`ref()` calls in a single pass. FK cycles fall back to alphabetical
+order with a `# WARNING` at the top of the file.
+
+### Determinism
+
+Two `dataseed harvest` runs against the same database (with the same
+options) produce byte-identical output, modulo the wall-clock
+`harvested` timestamp in the header. Distinct-value lists, observed
+geometry types, and the table list are sorted alphabetically; row
+sampling is PK-ordered when a primary key exists.
+
+### Feature flag
+
+The harvest subcommand pulls in the `postgres` and `regex` crates. It's
+behind a Cargo feature that's enabled by default:
+
+```sh
+# default build — includes harvest
+cargo install dataseed
+
+# slim plant-only build — no postgres, smaller binary
+cargo install dataseed --no-default-features
+```
+
 ## Scope
 
 Phases 1, 2, 3, and 4 are shipped: parser + AST, semantic analysis,
@@ -457,8 +523,9 @@ with topological generation order and cycle detection, SQL / PostGIS /
 JSON output, deterministic generation, machine-readable `--json`
 catalog, variable child counts (`per_parent`), distribution skew on
 refs (zipf / gauss / exponential), spatial relations via
-`randomPointNear`, self-references within a table, and DDL emission
-(`--emit-ddl`).
+`randomPointNear`, self-references within a table, DDL emission
+(`--emit-ddl`), and the `harvest` subcommand for inferring a
+`.dataseed` file from a live Postgres database.
 
 Out of scope (planned for later phases): correlated refs
 (`order.created_at > user.signup_date`), nested JSON output, custom CRS
