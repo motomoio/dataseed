@@ -1,0 +1,21 @@
+# A handful of warehouses spread across the Netherlands, each with a
+# tight cluster of sensors nearby. This is the canonical spatial-relations
+# shape: child rows sample positions relative to their parent's position.
+
+output: postgis
+
+table warehouses {
+  id:       sequence
+  name:     randomName()
+  location: randomPoint(bbox: [4.0, 51.0, 6.5, 53.0])
+}
+
+table sensors {
+  id:        sequence
+  warehouse: ref(warehouses.id)
+  location:  randomPointNear(center: ref(warehouses.location), radius_m: 500)
+  reading:   randomRealNumber(0.0, 100.0, decimals: 2)
+}
+
+generate warehouses: 10
+generate sensors: 200

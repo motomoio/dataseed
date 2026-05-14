@@ -280,6 +280,20 @@ fn build_value(pair: Pair<Rule>) -> Result<Value, ParseError> {
             let column = it.next().expect("column_ref: column ident").as_str().to_string();
             Ok(Value::ColumnRef { table, column })
         }
+        Rule::ref_call => {
+            // Inline `ref(T.C)` used as a generator argument value. The
+            // grammar guarantees exactly one `column_ref` inside. We
+            // collapse it into a bare `Value::ColumnRef` so the rest of
+            // the pipeline (semantic walker, bind, runtime) handles it
+            // identically to the bare `T.C` form. Distribution / per_parent
+            // kwargs on nested refs are intentionally NOT supported — those
+            // semantics belong to top-level `ref()` calls only.
+            let inner = pair.into_inner().next().expect("ref_call: column_ref");
+            let mut it = inner.into_inner();
+            let table = it.next().expect("ref_call: table ident").as_str().to_string();
+            let column = it.next().expect("ref_call: column ident").as_str().to_string();
+            Ok(Value::ColumnRef { table, column })
+        }
         Rule::range => {
             let (line, col) = pair.line_col();
             let raw_text = pair.as_str().to_string();

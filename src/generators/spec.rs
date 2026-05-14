@@ -216,13 +216,19 @@ pub static CATALOG: &[FunctionSpec] = &[
     FunctionSpec {
         name: "randomPointNear",
         args: &[
+            // `center` accepts EITHER a literal `[lon, lat]` array OR a
+            // `ref(table.col)` to a `geometry:point` column. We declare it
+            // as `Any` in the catalog and let `bind_random_point_near`
+            // enforce the actual shape — the catalog is just a coarse
+            // first-pass filter, and the `Any` widening unblocks the
+            // ref-as-arg form added in Task 3.2 (Phase 4.3).
             ArgSpec {
                 name: "center",
-                ty: ArgType::Array(&T_NUMBER),
+                ty: ArgType::Any,
                 required: true,
                 positional: false,
                 default: None,
-                length: Some(2),
+                length: None,
             },
             ArgSpec {
                 name: "radius_m",

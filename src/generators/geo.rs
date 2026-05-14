@@ -246,18 +246,51 @@ pub fn bind_random_point_near(call: &Call) -> Result<Box<dyn Generator>, Semanti
         function: call.function.clone(),
         arg: "center",
     })?;
-    let items = require_array(call, "center", center_val, 2)?;
-    let nums = array_as_numbers(call, "center", items)?;
-    let (lon, lat) = (nums[0], nums[1]);
-    if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
-        return Err(SemanticError::InvalidArgValue {
-            line: call.line,
-            col: call.col,
-            function: call.function.clone(),
-            arg: "center".into(),
-            reason: format!("[{lon}, {lat}] is outside WGS84 bounds"),
-        });
-    }
+    // Phase 4.3: `center` accepts either a literal `[lon, lat]` array OR
+    // a column reference to a `geometry:point` column. The ref form
+    // resolves per-row via `Resolved::resolve` against the materialized
+    // parent pool.
+    let center: super::resolved::Resolved<(f64, f64)> = match center_val {
+        Value::Array(_) => {
+            let items = require_array(call, "center", center_val, 2)?;
+            let nums = array_as_numbers(call, "center", items)?;
+            let (lon, lat) = (nums[0], nums[1]);
+            if !(-180.0..=180.0).contains(&lon) || !(-90.0..=90.0).contains(&lat) {
+                return Err(SemanticError::InvalidArgValue {
+                    line: call.line,
+                    col: call.col,
+                    function: call.function.clone(),
+                    arg: "center".into(),
+                    reason: format!("[{lon}, {lat}] is outside WGS84 bounds"),
+                });
+            }
+            super::resolved::Resolved::Literal((lon, lat))
+        }
+        Value::ColumnRef { table, column } => {
+            // The target column's type isn't checked here — the semantic
+            // walker only verifies it EXISTS. If the column is not a
+            // `geometry:point`, `cast_point` will return `None` at run
+            // time and `produce` will panic with a clear message. A
+            // future task may tighten this with column-type catalog data.
+            super::resolved::Resolved::Ref {
+                table: table.clone(),
+                column: column.clone(),
+                distribution: super::distribution::Distribution::Uniform,
+                cast: super::resolved::cast_point,
+            }
+        }
+        other => {
+            return Err(SemanticError::TypeMismatch {
+                line: call.line,
+                col: call.col,
+                function: call.function.clone(),
+                arg: "center".into(),
+                expected: "array [lon, lat] or column reference to a geometry:point",
+                got: other.type_name(),
+            });
+        }
+    };
+
     let radius_val = find_kwarg(call, "radius_m").ok_or_else(|| SemanticError::MissingArg {
         line: call.line,
         col: call.col,
@@ -274,43 +307,52 @@ pub fn bind_random_point_near(call: &Call) -> Result<Box<dyn Generator>, Semanti
             reason: format!("must be positive, got {radius_m}"),
         });
     }
-    // Equirectangular approximation: at latitude φ, one degree of longitude
-    // is cos(φ) times as long as one degree of latitude. Single `libm::cos`
-    // call here keeps the bit pattern identical across targets.
-    const METERS_PER_DEG_LAT: f64 = 111_320.0;
-    let lat_rad = lat.to_radians();
-    let lon_scale_m_per_deg = METERS_PER_DEG_LAT * libm::cos(lat_rad);
-    // Guard against division by zero near the poles. If we're within 1m of
-    // the pole, just use a tiny constant — at that latitude the radius is
-    // meaningless anyway.
-    let lon_scale_m_per_deg = lon_scale_m_per_deg.abs().max(1.0);
-    let radius_deg_lat = radius_m / METERS_PER_DEG_LAT;
-    let radius_deg_lon = radius_m / lon_scale_m_per_deg;
-    Ok(Box::new(RandomPointNear {
-        center_lon: lon,
-        center_lat: lat,
-        radius_deg_lon,
-        radius_deg_lat,
-    }))
+    Ok(Box::new(RandomPointNear { center, radius_m }))
 }
 
 struct RandomPointNear {
-    center_lon: f64,
-    center_lat: f64,
-    radius_deg_lon: f64,
-    radius_deg_lat: f64,
+    /// Either a fixed `(lon, lat)` decided at bind time, or a column
+    /// reference resolved per row from a `geometry:point` column.
+    center: super::resolved::Resolved<(f64, f64)>,
+    radius_m: f64,
 }
 
 impl Generator for RandomPointNear {
-    fn produce(&mut self, rng: &mut SeedRng, _ctx: &crate::output::RowCtx) -> Cell {
-        // Uniform-by-area sampling in a unit disk: r = sqrt(U), θ = 2πV.
-        // We avoid trig entirely by rejection-sampling in [-1, 1]² and
-        // accepting points inside the unit circle — also deterministic and
-        // platform-independent. Expected acceptance ~78.5% so this consumes
-        // a small variable number of RNG bytes per call. To keep RNG
-        // consumption fixed (and thus determinism per row trivial), we
-        // continue drawing until acceptance — the rejection rate is fully
-        // determined by the seed.
+    fn produce(&mut self, rng: &mut SeedRng, ctx: &crate::output::RowCtx) -> Cell {
+        // Resolve `center` first so the RNG-consumption order is:
+        //   (Ref path)     1 draw for parent pick + 2*N draws for the
+        //                  rejection-sampled unit disk;
+        //   (Literal path) 2*N draws for the rejection-sampled unit disk.
+        //
+        // Critically, the rejection-sample loop below consumes RNG in the
+        // same order as the pre-Task-3.2 code, so the literal-center path
+        // is byte-stable.
+        let (clon, clat) = self.center.resolve(rng, ctx).unwrap_or_else(|| {
+            panic!(
+                "randomPointNear: center ref couldn't be resolved (parent pool empty or column not a geometry:point)"
+            );
+        });
+
+        // Equirectangular approximation: at latitude φ, one degree of
+        // longitude is cos(φ) times as long as one degree of latitude.
+        // Computed per row because `center` may vary per row when the ref
+        // path is in use. For the literal-center path the inputs are
+        // constant so the result is bit-stable across rows — no drift.
+        // Determinism: `libm::cos` is pure-Rust software libm, so this
+        // call is bit-identical across targets.
+        const METERS_PER_DEG_LAT: f64 = 111_320.0;
+        let lat_rad = clat.to_radians();
+        let lon_scale_m_per_deg = METERS_PER_DEG_LAT * libm::cos(lat_rad);
+        // Guard against division by zero near the poles. Within 1m of the
+        // pole the longitude scaling is meaningless anyway.
+        let lon_scale_m_per_deg = lon_scale_m_per_deg.abs().max(1.0);
+        let radius_deg_lat = self.radius_m / METERS_PER_DEG_LAT;
+        let radius_deg_lon = self.radius_m / lon_scale_m_per_deg;
+
+        // Uniform-by-area sampling via rejection in [-1, 1]². No trig.
+        // Acceptance ~78.5%, but we always loop until acceptance — the
+        // rejection rate is fully determined by the seed, so determinism
+        // is per-seed.
         let (dx, dy) = loop {
             let x = rng.gen_range_f64(-1.0, 1.0);
             let y = rng.gen_range_f64(-1.0, 1.0);
@@ -319,8 +361,8 @@ impl Generator for RandomPointNear {
             }
         };
         Cell::Geometry(Geometry::Point {
-            lon: self.center_lon + dx * self.radius_deg_lon,
-            lat: self.center_lat + dy * self.radius_deg_lat,
+            lon: clon + dx * radius_deg_lon,
+            lat: clat + dy * radius_deg_lat,
         })
     }
 }

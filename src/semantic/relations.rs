@@ -163,69 +163,69 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
     }
 
     // --- Collect refs from every field ----------------------------------
-    // Each entry is one `ref()` call: where it appears, and what it points at.
-    // Filtering happens here so per-table iteration is local.
+    // Each entry is one column reference: where it appears, and what it
+    // points at. The walker finds `Value::ColumnRef` reachable from any
+    // call — top-level `ref(T.C)`, inlined `ref(T.C)` collapsed to a bare
+    // ColumnRef inside another generator's kwargs, or refs nested inside
+    // arrays. Each such occurrence contributes one edge.
+    //
+    // Filtering happens here so per-table iteration is local. We
+    // deliberately do NOT filter by `field.call.function == "ref"` —
+    // Task 3.2 introduced nested refs (e.g.
+    // `randomPointNear(center: ref(warehouses.location), ...)`), and the
+    // dependency-graph walker must see those too or the topo sort and
+    // materialisation plan miss the edge.
     let mut edges: Vec<CycleEdge> = Vec::new();
     for table in &file.tables {
         let table_name = table.name.as_str();
         for field in &table.fields {
-            if field.call.function != "ref" {
-                continue;
-            }
-            // Catalog check already rejected ill-shaped ref() calls. Skip
-            // anything that doesn't look like the canonical form rather than
-            // double-reporting.
-            let target = match extract_target(&field.call) {
-                Some(t) => t,
-                None => continue,
-            };
+            for_each_column_ref(&field.call, |parent_table, parent_column, line, col| {
+                // 1) target table must exist
+                if !declared.contains_key(parent_table) {
+                    report.errors.push(SemanticError::UndeclaredRefTable {
+                        line,
+                        col,
+                        table: parent_table.to_string(),
+                    });
+                    return;
+                }
 
-            // 1) target table must exist
-            let target_decl = declared.get(target.0.as_str());
-            if target_decl.is_none() {
-                report.errors.push(SemanticError::UndeclaredRefTable {
-                    line: field.call.line,
-                    col: field.call.col,
-                    table: target.0.clone(),
+                // 2) target column must exist in that table
+                let target_table = file
+                    .tables
+                    .iter()
+                    .find(|t| t.name == parent_table)
+                    .expect("declared but missing from tables?");
+                let column_exists = target_table.fields.iter().any(|f| f.name == parent_column);
+                if !column_exists {
+                    report.errors.push(SemanticError::UndeclaredRefColumn {
+                        line,
+                        col,
+                        table: parent_table.to_string(),
+                        column: parent_column.to_string(),
+                    });
+                    return;
+                }
+
+                // 3) no self-references
+                if table_name == parent_table {
+                    report.errors.push(SemanticError::SelfReference {
+                        line,
+                        col,
+                        table: parent_table.to_string(),
+                        column: parent_column.to_string(),
+                    });
+                    return;
+                }
+
+                edges.push(CycleEdge {
+                    from_table: table_name.to_string(),
+                    from_field: field.name.clone(),
+                    to_table: parent_table.to_string(),
+                    to_column: parent_column.to_string(),
+                    line,
+                    col,
                 });
-                continue;
-            }
-
-            // 2) target column must exist in that table
-            let target_table = file
-                .tables
-                .iter()
-                .find(|t| t.name == target.0)
-                .expect("declared but missing from tables?");
-            let column_exists = target_table.fields.iter().any(|f| f.name == target.1);
-            if !column_exists {
-                report.errors.push(SemanticError::UndeclaredRefColumn {
-                    line: field.call.line,
-                    col: field.call.col,
-                    table: target.0.clone(),
-                    column: target.1.clone(),
-                });
-                continue;
-            }
-
-            // 3) no self-references
-            if table_name == target.0 {
-                report.errors.push(SemanticError::SelfReference {
-                    line: field.call.line,
-                    col: field.call.col,
-                    table: target.0.clone(),
-                    column: target.1.clone(),
-                });
-                continue;
-            }
-
-            edges.push(CycleEdge {
-                from_table: table_name.to_string(),
-                from_field: field.name.clone(),
-                to_table: target.0,
-                to_column: target.1,
-                line: field.call.line,
-                col: field.call.col,
             });
         }
     }
@@ -255,6 +255,13 @@ pub(super) fn analyze(file: &File) -> RelationsReport {
 /// per_parent refs get target-existence diagnostics and contribute to the
 /// topo order and materialisation plan. Catalog validation has already
 /// emitted errors for other shapes; we just skip them here.
+///
+/// This helper is still used by the per_parent owner pass: only a
+/// top-level `ref(T.C)` call can carry per_parent semantics, so the owner
+/// pass keys on `function == "ref"` and uses this to pull out the target.
+/// Nested refs (collapsed by the parser into bare `Value::ColumnRef`
+/// inside another generator's kwargs) don't carry per_parent — they're
+/// handled by [`for_each_column_ref`].
 fn extract_target(call: &Call) -> Option<(String, String)> {
     if call.positional.len() != 1 {
         return None;
@@ -262,6 +269,43 @@ fn extract_target(call: &Call) -> Option<(String, String)> {
     match &call.positional[0] {
         Value::ColumnRef { table, column } => Some((table.clone(), column.clone())),
         _ => None,
+    }
+}
+
+/// Walk every `Value::ColumnRef` reachable from this call, including
+/// those nested inside arrays or as kwarg values. Each one represents a
+/// dependency edge from the field's table to `(table, column)`.
+///
+/// The callback receives the target `(table, column)` and the source
+/// location of the enclosing call — Phase 1/2 didn't preserve per-value
+/// line/col so we surface the call's position. That's accurate enough for
+/// diagnostics because a single call can carry multiple refs but they all
+/// share a textual neighbourhood.
+fn for_each_column_ref<F>(call: &Call, mut f: F)
+where
+    F: FnMut(&str, &str, usize, usize),
+{
+    fn walk<F: FnMut(&str, &str, usize, usize)>(
+        v: &Value,
+        line: usize,
+        col: usize,
+        f: &mut F,
+    ) {
+        match v {
+            Value::ColumnRef { table, column } => f(table, column, line, col),
+            Value::Array(items) => {
+                for it in items {
+                    walk(it, line, col, f);
+                }
+            }
+            _ => {}
+        }
+    }
+    for p in &call.positional {
+        walk(p, call.line, call.col, &mut f);
+    }
+    for (_, v) in &call.kwargs {
+        walk(v, call.line, call.col, &mut f);
     }
 }
 

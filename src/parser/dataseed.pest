@@ -74,11 +74,19 @@ positional   = { value }
 // number arrays (e.g. `bbox: [3.3, 50.7, 7.2, 53.5]`), but mixed/nested
 // arrays parse fine and are type-checked downstream.
 
+// `ref_call` (Phase 4.3) is the inline form of a column reference used as
+// a generator argument value — e.g. `randomPointNear(center: ref(T.C), ...)`.
+// It precedes `column_ref` for the same reason `column_ref` precedes
+// `boolean`: pest tries alternatives left-to-right, and `ref(T.C)` starts
+// with a bare identifier `ref` that would otherwise be ambiguous. The
+// builder collapses `ref_call` into `Value::ColumnRef` so the rest of the
+// pipeline treats it identically to the bare `T.C` form.
+//
 // `column_ref` (Phase 3) must precede `boolean` so `users.id` parses as a
 // reference rather than tripping on `true`/`false` keyword-lookahead. The
 // dot makes the rule unambiguous — a bare `true`/`false` without a `.`
 // still falls through to `boolean`.
-value    = _{ range | number | string | column_ref | boolean | array }
+value    = _{ range | number | string | ref_call | column_ref | boolean | array }
 number   = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 integer  = @{ "-"? ~ ASCII_DIGIT+ }
 range    = ${ integer ~ ".." ~ integer }
@@ -88,6 +96,7 @@ string_inner = @{ (escape | (!("\"" | "\\") ~ ANY))* }
 escape   = _{ "\\" ~ ("\"" | "\\" | "n" | "t" | "r") }
 array    = { "[" ~ (value ~ ("," ~ value)*)? ~ ","? ~ "]" }
 column_ref   = { ident ~ "." ~ ident }
+ref_call     = { "ref" ~ "(" ~ column_ref ~ ")" }
 
 // ----- Identifiers -------------------------------------------------------
 
