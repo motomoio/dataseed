@@ -371,3 +371,32 @@ fn negative_generate_count_rejected() {
         "negative count must produce InvalidCount, got {e:?}"
     );
 }
+
+#[test]
+fn parses_range_literal_in_kwarg() {
+    use dataseed::ast::Value;
+    let src = r#"
+        output: sql
+        table users { id: sequence }
+        table posts {
+          id: sequence
+          author_id: ref(users.id, per_parent: 1..5)
+        }
+        generate users: 100
+    "#;
+    let file = dataseed::parser::parse(src).expect("parse ok");
+    let posts = file.table("posts").expect("posts");
+    let ref_field = &posts.fields[1].call;
+    let (_, range_val) = ref_field
+        .kwargs
+        .iter()
+        .find(|(k, _)| k == "per_parent")
+        .expect("per_parent kwarg present");
+    match range_val {
+        Value::Range { lo, hi } => {
+            assert_eq!(*lo, 1);
+            assert_eq!(*hi, 5);
+        }
+        other => panic!("expected Range, got {other:?}"),
+    }
+}

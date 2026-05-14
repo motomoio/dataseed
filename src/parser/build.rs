@@ -280,6 +280,18 @@ fn build_value(pair: Pair<Rule>) -> Result<Value, ParseError> {
             let column = it.next().expect("column_ref: column ident").as_str().to_string();
             Ok(Value::ColumnRef { table, column })
         }
+        Rule::range => {
+            let (line, col) = pair.line_col();
+            let mut it = pair.into_inner();
+            let lo_pair = it.next().expect("range: lo");
+            let hi_pair = it.next().expect("range: hi");
+            let lo: i64 = lo_pair.as_str().parse().expect("integer rule");
+            let hi: i64 = hi_pair.as_str().parse().expect("integer rule");
+            if hi < lo {
+                return Err(ParseError::InvalidRange { line, col, lo, hi });
+            }
+            Ok(Value::Range { lo, hi })
+        }
         other => unreachable!("value matched unexpected rule: {other:?}"),
     }
 }

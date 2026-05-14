@@ -87,6 +87,10 @@ pub enum Value {
     /// accepts this variant; every other generator surfaces a type-mismatch
     /// error when a `ColumnRef` is passed.
     ColumnRef { table: String, column: String },
+    /// `N..M` integer range literal (inclusive bounds, `lo <= hi` enforced
+    /// at parse time). Consumed by `ref()`'s `per_parent` kwarg; other
+    /// generators surface a type-mismatch error when a `Range` is passed.
+    Range { lo: i64, hi: i64 },
 }
 
 impl Value {
@@ -97,6 +101,7 @@ impl Value {
             Value::Bool(_) => "boolean",
             Value::Array(_) => "array",
             Value::ColumnRef { .. } => "column_reference",
+            Value::Range { .. } => "range",
         }
     }
 }

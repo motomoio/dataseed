@@ -370,6 +370,14 @@ pub fn bind_random_choice(call: &Call) -> Result<Box<dyn Generator>, SemanticErr
                 expected: "scalar (number, string, or boolean)",
                 got: "column_reference",
             }),
+            Value::Range { .. } => Err(SemanticError::TypeMismatch {
+                line: call.line,
+                col: call.col,
+                function: call.function.clone(),
+                arg: format!("choice #{}", i + 1),
+                expected: "scalar (number, string, or boolean)",
+                got: "range",
+            }),
         })
         .collect();
     Ok(Box::new(RandomChoice { choices: choices? }))

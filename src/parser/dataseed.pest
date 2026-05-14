@@ -78,9 +78,10 @@ positional   = { value }
 // reference rather than tripping on `true`/`false` keyword-lookahead. The
 // dot makes the rule unambiguous — a bare `true`/`false` without a `.`
 // still falls through to `boolean`.
-value    = _{ number | string | column_ref | boolean | array }
+value    = _{ range | number | string | column_ref | boolean | array }
 number   = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 integer  = @{ "-"? ~ ASCII_DIGIT+ }
+range    = ${ integer ~ ".." ~ integer }
 boolean  = { "true" | "false" }
 string   = ${ "\"" ~ string_inner ~ "\"" }
 string_inner = @{ (escape | (!("\"" | "\\") ~ ANY))* }
