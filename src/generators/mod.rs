@@ -12,6 +12,7 @@ use crate::rng::SeedRng;
 
 pub mod spec;
 pub mod distribution;
+pub mod resolved;
 mod geo;
 mod impls;
 
